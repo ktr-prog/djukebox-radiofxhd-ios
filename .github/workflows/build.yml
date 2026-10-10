@@ -1,1 +1,33 @@
-
+name: Build unsigned IPA
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build (arm64, unsigned)
+        run: |
+          xcodebuild -project Radiofx.xcodeproj -scheme Radiofx_iPad \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee build.log | tail -n 200
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Radiofx_iPad.app Payload/
+          zip -qr Radiofx_iPad.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Radiofx_iPad-ipa
+          path: Radiofx_iPad.ipa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
