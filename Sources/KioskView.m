@@ -3,6 +3,7 @@
 // removed third-party code (Spotify, remote control, EPG, printing, third-party animation, jingles, ambience,
 // facebook, copy thread, ...) are not part of this file; see DEVIATIONS.md.
 #import "KioskView.h"
+#import "TestLibrary.h"
 #import "GLView.h"
 #import "KeyboardView.h"
 #import "MultichannelMixerController.h"
@@ -141,6 +142,8 @@
             [m_sve release];
             m_sve = [sc GetChoosenRfxServer:nil];
         }
+        // DEVIATION: demo songs for a device without music (only when the library is empty)
+        [TestLibrary SeedIfEmptyForServer:m_sve];
         m_trailerimagetime = [m_sve trailerimagetime];
 
         CGSize pad = [DEL GetiPadSize];
