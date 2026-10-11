@@ -64,6 +64,19 @@
     return UIInterfaceOrientationLandscapeRight;
 }
 
+// The window can have any size (iPad mini, iPad Pro, Split-less full screen): refit when it differs from the kiosk view.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (m_kioskview == nil) return;
+    CGSize sz = [(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] GetiPadSize];
+    CGRect cur = [m_kioskview frame];
+    if (fabsf(cur.size.width - sz.width) < 0.5f && fabsf(cur.size.height - sz.height) < 0.5f) return;
+    [m_kioskview setFrame:CGRectMake(0.0f, 0.0f, sz.width, sz.height)];
+    [m_kioskview FitSubViews:sz];
+    [[m_kioskview m_glv] SetDrawVars:sz];
+    [[m_kioskview m_glv] ReInit:1];
+}
+
 - (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)from {
     [[NSNotificationCenter defaultCenter] postNotification:
         [NSNotification notificationWithName:@"MsgiPadDidrotate" object:nil]];

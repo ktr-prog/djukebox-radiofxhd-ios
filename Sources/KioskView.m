@@ -1010,6 +1010,7 @@ static void RemoveClipViews(ClipObject *c) {
 }
 
 - (void)CorrectZindex:(UIView *)view {
+    if (view == nil) return;
     [view retain];
     [view removeFromSuperview];
     [self insertSubview:view belowSubview:[m_glv GetRegister0]];
@@ -1175,7 +1176,7 @@ static void RemoveClipViews(ClipObject *c) {
 - (void)SendCDsToBackGround {
     if (m_waitview != nil) [self sendSubviewToBack:m_waitview];
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++)
-        [self sendSubviewToBack:[[[self m_clips] rfx_objectAtIndex:i] m_imgv]];
+        { UIView *v = [[[self m_clips] rfx_objectAtIndex:i] m_imgv]; if (v != nil) [self sendSubviewToBack:v]; }
 }
 
 - (void)EmptyQueue {

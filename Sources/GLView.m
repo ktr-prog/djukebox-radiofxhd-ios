@@ -309,6 +309,12 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         if (0.5f >= [[UIScreen mainScreen] scale]) { r1 -= 0xa5; r2 -= 0x11d; }
         else                                      { r1 -= 0xe6; r2 -= 0x15e; }
     }
+    if (ISIPAD && landscape) {
+        // the flow is drawn with a fixed horizontal field of view, so it scales with the width and stays centred vertically
+        float k = pad.width / 1024.0f, mid = pad.height * 0.5f;
+        r1 = (int)(mid + ((float)r1 - 384.0f) * k);
+        r2 = (int)(mid + ((float)r2 - 384.0f) * k);
+    }
     double w2 = (double)(int)(pad.width * 0.5f);
     static const double fx[7] = { 0.0, 0.12, 0.36, 0.776, 1.224, 1.64, 1.88 };
     static const double fw[7] = { 0.12, 0.24, 0.416, 0.448, 0.416, 0.24, 0.12 };

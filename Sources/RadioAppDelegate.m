@@ -7,6 +7,7 @@
 #import "FolderObject.h"
 #import "ClipObject.h"
 #import "iPadMainVC.h"
+#import "RfxCrashLog.h"
 #import "KioskHelper.h"
 #import "KioskView.h"
 #import "RadioVC.h"
@@ -81,6 +82,8 @@ int gv_kioskflag = 0;
     return YES;
 }
 
+- (void)RfxShowCrash { RfxCrashLog_ShowPrevious(); }
+
 - (void)applicationDidFinishLaunching:(UIApplication *)application {
     m_kh = nil;
     m_vintern = [self CalcVIntern];
@@ -108,6 +111,7 @@ int gv_kioskflag = 0;
     m_ipadnavi = [[UINavigationController alloc] initWithRootViewController:m_ipadmainvc];
     [m_ipadnavi setNavigationBarHidden:YES];
     // The original did [window addSubview:[m_ipadnavi view]]; current iOS requires a root view controller.
+    [window setFrame:[[UIScreen mainScreen] bounds]];
     [window setRootViewController:m_ipadnavi];
     [m_ipadmainvc release];
     m_startimage = [self GetStartImageView];
@@ -115,6 +119,7 @@ int gv_kioskflag = 0;
         [[m_ipadmainvc view] addSubview:m_startimage];
     [window setBackgroundColor:[UIColor blackColor]];
     [window makeKeyAndVisible];
+    [self performSelector:@selector(RfxShowCrash) withObject:nil afterDelay:1.5];
     currentDatabaseVersion = 0;
     databaseVersionNeeded = 0x44a;
     m_kh = [[KioskHelper alloc] init];
@@ -1009,7 +1014,9 @@ int gv_kioskflag = 0;
     UIImage *img = [self NonCachedImage:@"Defaultipad-Landscape"];
     if (img == nil) return nil;
     BOOL ipad = [self m_isipad];
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, ipad ? 1024.0f : 480.0f, ipad ? 768.0f : 320.0f)];
+    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [self GetiPadSize].width, [self GetiPadSize].height)];
+    [iv setContentMode:UIViewContentModeScaleAspectFill];
+    [iv setClipsToBounds:YES];
     [iv setImage:img];
     return iv;
 }
@@ -1033,6 +1040,10 @@ int gv_kioskflag = 0;
 }
 
 - (CGSize)GetiPadSize {
+    // Port change: the app is landscape only and now fills the whole screen instead of the fixed 1024x768 / 480x320.
+    CGRect b = [[UIScreen mainScreen] bounds];
+    float w = fmaxf(b.size.width, b.size.height), h = fminf(b.size.width, b.size.height);
+    if (w > 0.0f && h > 0.0f) return CGSizeMake(w, h);
     if (m_isipad) return CGSizeMake(1024.0f, 768.0f);
     return CGSizeMake(480.0f, 320.0f);
 }
