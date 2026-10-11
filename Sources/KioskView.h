@@ -12,6 +12,7 @@
     MultichannelMixerController *mMCMixer;
     UILabel *m_label;
     UILabel *m_ratelabel;
+    int m_tutorialpage;
     UIView *m_divider;
     GLView *m_glv;
     NSMutableArray *m_clips;
@@ -295,6 +296,7 @@
 - (id)GetRCConDeviceID;
 - (UIImage *)GetSongPictureFor:(NSString *)title withinterpret:(NSString *)interpret;
 - (void)StartHelpPictureAni;
+- (void)ShowTutorial;
 - (NSMutableDictionary *)m_nowdict;
 - (void)InsertIntoRemoteQueue:(int)type withpoint:(CGPoint)point witharg1:(long long)arg1 witharg2:(int)arg2
                      witharg3:(int)arg3 withleaveoutclient:(long)leaveoutclient witharg4:(int)arg4;

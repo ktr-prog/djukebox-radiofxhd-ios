@@ -993,6 +993,15 @@
     return n;
 }
 
+// port addition: removes the "Test Songs" demo folder of earlier builds
+- (void)DeleteDemoFolder {
+    if ([self dbOpen]) {
+        [db executeUpdate:@"DELETE FROM Mixxtapes WHERE folderid = 100 AND interpret LIKE 'Test Artist %'"];
+        [db executeUpdate:@"DELETE FROM MTFolders WHERE folderid = 100 AND foldername = 'Test Songs'"];
+        [self dbClose];
+    }
+}
+
 // port addition: removes the demo rows an earlier build stored under the reserved folder id 1
 - (void)DeleteLegacyDemoRows {
     if ([self dbOpen]) {

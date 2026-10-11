@@ -236,6 +236,9 @@
 
     for (int i = 0; i < 10; i++) {
         [m_registers[i] setM_enabled:NO];
+        // port: only volume (0), search (2), collections (4) and help (5) exist offline.  The speech bubble (1), the
+        // on/off button (3) and the settings / video / euro / pin-board buttons (6-9) belong to the dead backend.
+        if (i == 1 || i == 3 || i >= 6) continue;
         if ([self m_pinchstatus] == 2 && i != 2) continue;
         BOOL online = [DEL IsOnline];
         switch (i) {
@@ -356,15 +359,9 @@
             }
             [self ToggleAni];
             break;
-        case 5:
-            if (![m_searchview m_keyboardshown]) {
-                [m_parent SendCDsToBackGround];
-                [m_parent OrderGLVAndBlackView];
-                [m_searchview setM_showwhat:which];
-                [m_searchview InitHelpPic];
-                [m_searchview ShowElements:[m_searchview m_showwhat]];
-            }
-            [self ToggleAni];
+        case 5:     // light bulb: the tutorial pictures (the original's help web view is gone with the server)
+            if ([m_searchview m_keyboardshown]) [self ToggleAni];
+            [m_parent ShowTutorial];
             break;
         case 6:
             if (![m_searchview m_keyboardshown]) {
