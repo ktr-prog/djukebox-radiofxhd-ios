@@ -13,10 +13,11 @@ jobs:
         run: xcodegen generate
       - name: Build (arm64, unsigned)
         run: |
+          set -o pipefail
           xcodebuild -project Radiofx.xcodeproj -scheme Radiofx_iPad \
             -configuration Release -sdk iphoneos -derivedDataPath build \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            | tee build.log | tail -n 200
+            2>&1 | tee build.log | tail -n 200
       - name: Package IPA
         run: |
           mkdir -p Payload
