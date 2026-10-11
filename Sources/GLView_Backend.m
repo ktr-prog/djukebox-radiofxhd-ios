@@ -2,6 +2,7 @@
 // The Tobit servers are gone; every path below stays reachable in code but is inert at
 // runtime (no server entry, no EPG, no advertising, no card reader), see DEVIATIONS.md.
 #import "GLView.h"
+#import "Globals.h"
 #import "KioskView.h"
 #import "KeyboardView.h"
 #import "DBOperations.h"
