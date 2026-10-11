@@ -326,7 +326,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 }
 
 - (void)volSliderAction:(id)volSliderAction {
-    float v = [volSliderAction value];
+    float v = [(UISlider *)volSliderAction value];
     [m_pkiosk setM_lastvolume:v];
     [m_pkiosk SetPlayerVolume:v];
 }
