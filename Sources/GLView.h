@@ -301,7 +301,7 @@
 - (void)CheckChannelsInRondell;
 - (id)GetColorForProg:(id)colorForProg;
 - (BOOL)IsShowingChannelView;
-- (void)AddRedDot:(int)redDot withContext:(CGContext *)contextArg;
+- (void)AddRedDot:(int)redDot withContext:(CGContextRef )contextArg;
 - (void)destroyFramebuffer;
 - (BOOL)createFramebuffer;
 - (void)layoutSubviews;
