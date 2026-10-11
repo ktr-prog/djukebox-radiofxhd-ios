@@ -4,9 +4,36 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-@class GLView, KioskView;
+@class GLView, KioskView, KeyboardView;
 
-@interface KeyboardView : UIView <UITableViewDelegate, UITableViewDataSource> {
+// MenuView -- the small native panels of the original app: type 0 "Newsflash" (hourly time announcement check box),
+// type 1 off-timer radio list, type 2 "Videothek" list.  Recovered from -[MenuView ...] of Radiofx_iPad.
+@interface MenuView : UIView {
+    BOOL m_setupobserver;
+    BOOL m_cmset[8];
+    KeyboardView *m_kbview;
+    KioskView *m_pkiosk;
+    int m_type;
+    int m_offindex;
+    NSMutableArray *m_labels;
+    UIImageView *m_topimgv;
+    NSMutableArray *m_imgvs;
+    NSMutableArray *m_videothek;
+}
+- (void)Setup:(int)setup;
+- (void)SetParent:(KeyboardView *)parent;
+- (void)SetKioskPointer:(KioskView *)kiosk;
+- (void)SetBackColor;
+- (id)GetFirstVideo;
+- (void)AddCheckmark:(int)checkmark withrect:(CGRect)rect;
+- (CGRect)GetWDRCheckboxFrame:(int)index;
+- (CGRect)GetWDRLabelFrame:(int)index;
+- (CGRect)GetWDRSlizerFrame:(int)index;
+- (void)StartWDRSoundForLine:(int)line;
+- (void)StartVideoForLine:(int)line;
+@end
+
+@interface KeyboardView : UIView <UITableViewDelegate, UITableViewDataSource, UIWebViewDelegate> {
     UIImageView *m_keyboardpic;       // +48
     UILabel *m_nonewtitles;           // +52
     UIView *m_sliderbackground;       // +56
@@ -35,6 +62,14 @@
     UIImageView *m_collectionicon;    // +172
     BOOL m_gotooverview;              // +176
     BOOL m_draggingvolume;            // +204
+    MenuView *m_wdrview;              // +188  register 1  "Newsflash"
+    MenuView *m_onoffview;            // +192  register 3  off timer
+    MenuView *m_videoview;            // +196  register 7  "Videothek"
+    UIWebView *m_webview;             // +112  register 6  settings page
+    UIWebView *m_hintwebview;         // +116  register 8  recommendations page
+    UIWebView *m_FBwebview;           // +120  register 9  pin-board
+    UIActivityIndicatorView *progView;
+    UILabel *m_weblabel;              // port: shows why a web panel is empty (back-end gone)
 }
 @property (assign) BOOL m_draggingvolume;
 @property (nonatomic, retain) NSMutableArray *m_srarrayother;
@@ -97,6 +132,14 @@
 - (void)SetPicThreadStarted:(int)picThreadStarted withval:(BOOL)val;
 - (void)SetImagesOnSlider:(UISlider *)imagesOnSlider;
 - (void)SetResortFlag:(int)resortFlag withval:(BOOL)val;
+- (void)OpenConfigUrl:(NSURLRequest *)openConfigUrl;
+- (void)OpenHintUrl:(NSURLRequest *)openHintUrl;
+- (void)OpenFBWallUrl:(NSURLRequest *)openFBWallUrl;
+- (void)ShutDownRest:(NSNumber *)shutDownRest;
+- (void)ResetupVideoView;
+- (void)startAni;
+- (void)stopAni;
+- (void)LayoutPanels;
 
 // panels of the dead web back-end: kept as inert hooks so the original call sites stay intact
 - (void)SetWebViewsBlack;

@@ -74,6 +74,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     [m_nonewtitles setFrame:r];
     [self RestartKeyboardtimer];
     [self SetCursorFrame];
+    [self LayoutPanels];
 }
 
 - (void)FitVolumeElements:(CGSize)fitVolumeElements {
@@ -246,6 +247,12 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             if (m_volslider != nil) [m_volslider setHidden:NO];
             if (m_voloverlay != nil) [m_voloverlay setHidden:NO];
             break;
+        case 1: [m_wdrview setHidden:NO]; break;
+        case 3: [m_onoffview setHidden:NO]; break;
+        case 7: [self ResetupVideoView]; [m_videoview setHidden:NO]; break;
+        case 6: [m_webview setHidden:NO]; [self LayoutPanels]; break;
+        case 8: [m_hintwebview setHidden:NO]; [self LayoutPanels]; break;
+        case 9: [m_FBwebview setHidden:NO]; [self LayoutPanels]; break;
         case 5:
             break;
         case 2: {
@@ -307,10 +314,20 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     [m_founditemslabel setHidden:YES];
     [m_collectionicon setHidden:YES];
     [m_nonewtitles setHidden:YES];
+    [m_wdrview setHidden:YES];
+    [m_onoffview setHidden:YES];
+    [m_videoview setHidden:YES];
+    [m_webview setHidden:YES];
+    [m_hintwebview setHidden:YES];
+    [m_FBwebview setHidden:YES];
+    [m_weblabel setHidden:YES];
 }
 
 - (void)ForwardKioskPointer:(KioskView *)forwardKioskPointer {
     m_pkiosk = forwardKioskPointer;
+    [m_wdrview SetKioskPointer:forwardKioskPointer];
+    [m_onoffview SetKioskPointer:forwardKioskPointer];
+    [m_videoview SetKioskPointer:forwardKioskPointer];
     if (m_volslider != nil) {
         [m_volslider setValue:[m_pkiosk m_lastvolume] animated:NO];
     }
@@ -447,6 +464,40 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         [m_nonewtitles setBackgroundColor:[UIColor clearColor]];
         [m_nonewtitles setTextColor:[UIColor colorWithRed:0.65f green:0.65f blue:0.65f alpha:1.0f]];
         [m_nonewtitles setFont:[UIFont boldSystemFontOfSize:20.0f]];
+
+        // ---- panels of registers 1, 3, 6, 7, 8, 9 (restored; they show their native content without a back-end)
+        m_wdrview = [[MenuView alloc] initWithFrame:CGRectMake(0, 910, 330, 90)];
+        [self addSubview:m_wdrview]; [m_wdrview release];
+        [m_wdrview setBackgroundColor:darkgray];
+        [m_wdrview Setup:0]; [m_wdrview SetParent:self];
+        m_onoffview = [[MenuView alloc] initWithFrame:CGRectMake(0, 772, 220, 228)];
+        [self addSubview:m_onoffview]; [m_onoffview release];
+        [m_onoffview setBackgroundColor:darkgray];
+        [m_onoffview Setup:1]; [m_onoffview SetParent:self];
+        m_videoview = [[MenuView alloc] initWithFrame:CGRectMake(0, 688, 220, 312)];
+        [self addSubview:m_videoview]; [m_videoview release];
+        [m_videoview setBackgroundColor:darkgray];
+        [m_videoview Setup:2]; [m_videoview SetParent:self];
+        UIWebView **wv[3] = { &m_webview, &m_hintwebview, &m_FBwebview };
+        for (int i = 0; i < 3; i++) {
+            *wv[i] = [[UIWebView alloc] initWithFrame:CGRectMake(0, 315, 760, 685)];
+            [self addSubview:*wv[i]]; [*wv[i] release];
+            [*wv[i] setDelegate:self];
+            [*wv[i] setBackgroundColor:[UIColor blackColor]];
+            [*wv[i] setOpaque:NO];
+            [*wv[i] setHidden:YES];
+        }
+        progView = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+        [progView setHidden:YES];
+        [self addSubview:progView]; [progView release];
+        m_weblabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 600, 120)];
+        [m_weblabel setNumberOfLines:0];
+        [m_weblabel setTextAlignment:NSTextAlignmentCenter];
+        [m_weblabel setBackgroundColor:[UIColor clearColor]];
+        [m_weblabel setTextColor:[UIColor colorWithWhite:0.55f alpha:1.0f]];
+        [m_weblabel setFont:[UIFont boldSystemFontOfSize:18.0f]];
+        [m_weblabel setHidden:YES];
+        [self addSubview:m_weblabel]; [m_weblabel release];
 
         [self ShowElements:1];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(SetFoundItemsLabelText:) name:@"MsgTextFoundItemsLabel" object:nil];
@@ -902,6 +953,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 
 - (void)SetParent:(GLView *)parent {
     m_parent = parent;
+    [self LayoutPanels];
 }
 
 #pragma mark - frames (panel coordinate system is 1000 points tall; the GLView slides it up)
@@ -1149,7 +1201,81 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 // Those panels are not part of this build (no server), so there is nothing to forward to.
 - (void)SetWebViewsBlack { }
 - (void)InitHelpPic { }
-- (id)GetFirstVideo { return nil; }
+- (id)GetFirstVideo { [self ResetupVideoView]; return [m_videoview GetFirstVideo]; }
+- (void)ResetupVideoView { [m_videoview Setup:2]; }
+
+#pragma mark - restored panels (registers 1, 3, 6, 7, 8, 9)
+
+// panel x: centred under its register button (original GetWDRViewFrame: / GetOnOffViewFrame: / GetVideoViewFrame:)
+- (CGRect)PanelFrame:(int)which width:(float)w height:(float)h {
+    CGSize sz = [DEL GetiPadSize];
+    CGRect rr = (m_parent != nil) ? [m_parent GetRegisterRect:which] : CGRectZero;
+    float x = rr.origin.x + rr.size.width * 0.5f - w * 0.5f;
+    if (x > sz.width - 20.0f - w) x = sz.width - 20.0f - w;
+    if (x < 20.0f) x = 20.0f;
+    return CGRectMake(x, 1000.0f - h, w, h);
+}
+
+- (CGRect)GetWDRViewFrame:(CGSize)s { return [self PanelFrame:1 width:330 height:90]; }
+- (CGRect)GetOnOffViewFrame:(CGSize)s { return [self PanelFrame:3 width:220 height:228]; }
+- (CGRect)GetVideoViewFrame:(CGSize)s { return [self PanelFrame:7 width:220 height:312]; }
+// web panels: 685 pt tall (iPad), hanging from the top of the screen, centred
+- (CGRect)GetWebViewFrame:(CGSize)s {
+    float w = MIN(760.0f, s.width), h = 685.0f;
+    return CGRectMake((s.width - w) * 0.5f, 1000.0f - h, w, h);
+}
+
+- (void)LayoutPanels {
+    CGSize sz = [DEL GetiPadSize];
+    [m_wdrview setFrame:[self GetWDRViewFrame:sz]];
+    [m_onoffview setFrame:[self GetOnOffViewFrame:sz]];
+    [m_videoview setFrame:[self GetVideoViewFrame:sz]];
+    CGRect wf = [self GetWebViewFrame:sz];
+    [m_webview setFrame:wf]; [m_hintwebview setFrame:wf]; [m_FBwebview setFrame:wf];
+    [progView setCenter:CGPointMake(CGRectGetMidX(wf), CGRectGetMidY(wf))];
+    [m_weblabel setFrame:CGRectMake(CGRectGetMidX(wf) - 300, CGRectGetMidY(wf) + 30, 600, 120)];
+}
+
+- (void)startAni {
+    [m_weblabel setHidden:YES];
+    [progView setHidden:NO];
+    [progView startAnimating];
+    [self bringSubviewToFront:progView];
+}
+
+- (void)stopAni {
+    [progView stopAnimating];
+    [progView setHidden:YES];
+}
+
+- (void)LoadWeb:(UIWebView *)wv request:(NSURLRequest *)req {
+    [self startAni];
+    [wv stopLoading];
+    [wv loadRequest:req];
+}
+- (void)OpenConfigUrl:(NSURLRequest *)openConfigUrl { [self LoadWeb:m_webview request:openConfigUrl]; }
+- (void)OpenHintUrl:(NSURLRequest *)openHintUrl { [self LoadWeb:m_hintwebview request:openHintUrl]; }
+- (void)OpenFBWallUrl:(NSURLRequest *)openFBWallUrl { [self LoadWeb:m_FBwebview request:openFBWallUrl]; }
+
+- (void)webViewDidStartLoad:(UIWebView *)webView { [m_weblabel setHidden:YES]; }
+- (void)webViewDidFinishLoad:(UIWebView *)webView { [self stopAni]; }
+- (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error {
+    [self stopAni];
+    if ([error code] == NSURLErrorCancelled) return;
+    // port: the Tobit servers are gone; say so instead of showing an empty black page
+    NSString *u = [[[error userInfo] objectForKey:NSURLErrorFailingURLStringErrorKey] description];
+    [m_weblabel setText:[NSString stringWithFormat:@"Der Server ist nicht erreichbar.\n%@", (u != nil ? u : @"")]];
+    [m_weblabel setHidden:NO];
+    [self bringSubviewToFront:m_weblabel];
+}
+
+// original: sets the off timer (seconds) and closes the panel
+- (void)ShutDownRest:(NSNumber *)shutDownRest {
+    int secs = [shutDownRest intValue];
+    [m_parent setM_movingup:YES];
+    [[m_pkiosk m_glv] performSelector:@selector(ToggleKBAndRegister:) withObject:[NSNumber numberWithInt:m_showwhat] afterDelay:0.3];
+    [m_pkiosk StartKioskShutdowntimer:secs];
+}
 
 - (id)GetSecSvr { return m_secsvr; }
 
@@ -1158,6 +1284,225 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     long long vol = (long long)((double)[m_pkiosk m_lastvolume] * 100.0);
     [m_pkiosk InsertIntoRemoteQueue:0xfa4 withpoint:CGPointZero witharg1:vol witharg2:0
                            witharg3:-1 withleaveoutclient:0 witharg4:0];
+}
+
+@end
+
+
+#pragma mark - MenuView
+
+@implementation MenuView
+
+- (id)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        m_setupobserver = NO;
+        memset(m_cmset, 0, sizeof(m_cmset));
+        m_kbview = nil;
+        m_pkiosk = nil;
+        m_type = -1;
+        m_offindex = -1;
+        m_labels = [[NSMutableArray alloc] init];
+        m_topimgv = nil;
+        m_imgvs = [[NSMutableArray alloc] init];
+        m_videothek = [[NSMutableArray alloc] init];
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [m_labels release];
+    [m_imgvs release];
+    [m_videothek release];
+    [super dealloc];
+}
+
+- (void)SetParent:(KeyboardView *)parent { m_kbview = parent; }
+- (void)SetKioskPointer:(KioskView *)kiosk { m_pkiosk = kiosk; }
+- (void)StartWDRSoundForLine:(int)line { }
+
+- (CGRect)GetWDRCheckboxFrame:(int)index {
+    float w = [self frame].size.width;
+    return CGRectMake(w - 40.0f, (float)((m_type == 1 ? 13 : 55) + index * 45), 22.0f, 22.0f);
+}
+
+- (CGRect)GetWDRLabelFrame:(int)index {
+    CGRect cb = [self GetWDRCheckboxFrame:index];
+    float w = [self frame].size.width;
+    if (m_type == 2) return CGRectMake(5.0f, cb.origin.y, w - 10.0f, cb.size.height);
+    float x = cb.origin.x - (m_type == 1 ? 150.0f : 275.0f);
+    return CGRectMake(x, cb.origin.y, cb.origin.x - x - 5.0f, cb.size.height);
+}
+
+- (CGRect)GetWDRSlizerFrame:(int)index {
+    CGRect cb = [self GetWDRCheckboxFrame:index];
+    return CGRectMake(0.0f, cb.origin.y + cb.size.height + 9.0f, [self frame].size.width, 2.0f);
+}
+
+- (void)SetBackColor {
+    for (UILabel *l in m_labels) [l setTextColor:[UIColor colorWithWhite:0.35f alpha:1.0f]];
+}
+
+- (void)AddCheckmark:(int)checkmark withrect:(CGRect)rect {
+    UIImageView *iv = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"haken.png"]];
+    [iv setFrame:CGRectMake(rect.origin.x + 4.0f, rect.origin.y - 1.0f, 23.0f, 18.0f)];
+    [self addSubview:iv];
+    [iv setTag:checkmark + 2000];
+    [iv release];
+}
+
+- (id)GetFirstVideo {
+    if ([m_videothek count] != 1) return nil;
+    return [NSString stringWithFormat:@"%@", [m_videothek objectAtIndex:0]];
+}
+
+- (int)RowCount {
+    if (m_type == 0) return 1;
+    if (m_type == 1) return 5;
+    return (int)[m_videothek count];
+}
+
+- (void)Setup:(int)setup {
+    m_type = setup;
+    if (m_type == 2 && !m_setupobserver) {
+        m_setupobserver = YES;
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(SetBackColor) name:@"MsgSetBackColor" object:nil];
+    }
+    float w = [self frame].size.width;
+    if (m_topimgv != nil) {
+        [m_topimgv removeFromSuperview];
+        m_topimgv = nil;
+    }
+    if (m_type != 1) {
+        UIImage *cap = [DEL CreateStretchedImage:nil withImage:[DEL NonCachedImage:@"caption"] withLeftCap:10.0f withTopCap:0.0f withInvert:NO];
+        m_topimgv = [[UIImageView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, w, 41.0f)];
+        [m_topimgv setImage:cap];
+        [self addSubview:m_topimgv];
+        [m_topimgv release];
+    }
+    for (UIView *v in m_labels) [v removeFromSuperview];
+    [m_labels removeAllObjects];
+    for (UIView *v in m_imgvs) [v removeFromSuperview];
+    [m_imgvs removeAllObjects];
+    for (UIView *v in [NSArray arrayWithArray:[self subviews]]) {
+        if ([v tag] >= 2000 && [v tag] < 2100) [v removeFromSuperview];
+    }
+    if (m_type == 2) {
+        [m_videothek removeAllObjects];
+        [DEL GetVideothek:m_videothek];
+    }
+    if (m_type != 1) {
+        UILabel *head = [[UILabel alloc] initWithFrame:CGRectMake(0.0f, 10.0f, w, 20.0f)];
+        [head setText:(m_type == 2 ? @"Videothek" : @"Newsflash")];
+        [head setFont:[UIFont boldSystemFontOfSize:19.0f]];
+        [head setTextColor:[UIColor colorWithWhite:0.35f alpha:1.0f]];
+        [head setBackgroundColor:[UIColor clearColor]];
+        [head setShadowColor:[UIColor colorWithWhite:0.102f alpha:1.0f]];
+        [head setShadowOffset:CGSizeMake(0, -1)];
+        [head setTextAlignment:NSTextAlignmentCenter];
+        [self addSubview:head];
+        [m_labels addObject:head];
+        [head release];
+    }
+    int rows = [self RowCount];
+    NSArray *offTitles = [NSArray arrayWithObjects:@"Ausschalten", @"In 15 Min.", @"In 30 Min.", @"In 60 Min.", @"In 90 Min.", nil];
+    int flags = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@"keywdrflags"];
+    for (int i = 0; i < rows; i++) {
+        if (m_type <= 1) {
+            UIImageView *box = [[UIImageView alloc] initWithFrame:[self GetWDRCheckboxFrame:i]];
+            [box setImage:[UIImage imageNamed:(m_type == 0 ? @"checkbox.png" : @"radiobutton.png")]];
+            [self addSubview:box];
+            [box release];
+        }
+        UILabel *l = [[UILabel alloc] initWithFrame:[self GetWDRLabelFrame:i]];
+        if (m_type == 2) {
+            NSString *name = [[NSString stringWithFormat:@"%@", [m_videothek objectAtIndex:i]] lastPathComponent];
+            if ([[name pathExtension] length] != 0) name = [name stringByDeletingPathExtension];
+            [l setText:name];
+        } else if (m_type == 1) {
+            [l setText:[offTitles objectAtIndex:i]];
+        } else {
+            [l setText:@"Stündliche Zeitansage"];
+        }
+        [self addSubview:l];
+        [l setFont:[UIFont boldSystemFontOfSize:18.0f]];
+        [l setTextColor:[UIColor colorWithWhite:0.651f alpha:1.0f]];
+        [l setBackgroundColor:[UIColor clearColor]];
+        [l setShadowColor:[UIColor colorWithWhite:0.102f alpha:1.0f]];
+        [l setShadowOffset:CGSizeMake(0, -1)];
+        if (m_type == 2) {
+            [l setAdjustsFontSizeToFitWidth:YES];
+            [l setTextAlignment:NSTextAlignmentCenter];
+        }
+        [m_labels addObject:l];
+        [l release];
+        if (m_type == 0) {
+            m_cmset[i] = (flags & (1 << i)) != 0;
+            if (m_cmset[i]) [self AddCheckmark:i withrect:[self GetWDRCheckboxFrame:i]];
+        }
+        if (i + 1 < rows || m_type == 2) {
+            UIImageView *sep = [[UIImageView alloc] initWithFrame:[self GetWDRSlizerFrame:i]];
+            [sep setImage:[UIImage imageNamed:@"trennlinie.png"]];
+            [self addSubview:sep];
+            [m_imgvs addObject:sep];
+            [sep release];
+        }
+    }
+    if (m_type == 1 && m_offindex >= 0 && m_offindex < 5)
+        [self AddCheckmark:m_offindex withrect:[self GetWDRCheckboxFrame:m_offindex]];
+}
+
+- (void)StartVideoForLine:(int)line {
+    if ((NSUInteger)line >= [m_videothek count]) return;
+    [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:7]];
+    if ((NSUInteger)(line + 1) < [m_labels count]) [[m_labels objectAtIndex:line + 1] setTextColor:[UIColor whiteColor]];
+    NSDictionary *d = [NSDictionary dictionaryWithObjectsAndKeys:[NSString stringWithFormat:@"%@", [m_videothek objectAtIndex:line]],
+                       @"keyfilmdictvideothek", [NSNumber numberWithInt:0], @"keyfilmdictcommercial", nil];
+    [m_pkiosk performSelector:@selector(StartTPAni:) withObject:d afterDelay:0.01];
+}
+
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+    UITouch *t = [touches anyObject];
+    if (t == nil) return;
+    [m_kbview RestartKeyboardtimer];
+    [[m_pkiosk m_glv] RestartIdleTimer];
+    [[m_pkiosk m_glv] RestartAdvertTimer];
+    CGPoint p = [t locationInView:self];
+    if (p.y <= 41.0f && m_type != 1) {          // caption bar closes the panel
+        [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:[m_kbview m_showwhat]]];
+        return;
+    }
+    float base = (m_type == 1) ? 13.0f : 55.0f;
+    int row = (int)floorf((p.y - base + 12.0f) / 45.0f);
+    if (row < 0 || row >= [self RowCount]) return;
+    if (m_type == 2) {
+        [self StartVideoForLine:row];
+    } else if (m_type == 0) {
+        m_cmset[row] = !m_cmset[row];
+        UIView *old = [self viewWithTag:row + 2000];
+        if (m_cmset[row]) { if (old == nil) [self AddCheckmark:row withrect:[self GetWDRCheckboxFrame:row]]; }
+        else [old removeFromSuperview];
+        int flags = 0;
+        for (int i = 0; i < 8; i++) if (m_cmset[i]) flags |= (1 << i);
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        [ud setInteger:flags forKey:@"keywdrflags"];
+        [ud synchronize];
+        // original forwards the flags to the hourly announcement timer
+        [DEL setM_runhourtimer:(flags != 0)];
+    } else {
+        for (int i = 0; i < 5; i++) [[self viewWithTag:i + 2000] removeFromSuperview];
+        if (row == m_offindex) {                // second tap on the active entry cancels the timer
+            m_offindex = -1;
+            [m_pkiosk StopKioskShutdowntimer];
+            [[m_pkiosk m_glv] performSelector:@selector(ToggleKBAndRegister:) withObject:[NSNumber numberWithInt:3] afterDelay:0.3];
+        } else {
+            m_offindex = row;
+            static const int secs[5] = { 1, 900, 1800, 3600, 5400 };
+            [self AddCheckmark:row withrect:[self GetWDRCheckboxFrame:row]];
+            [m_kbview performSelector:@selector(ShutDownRest:) withObject:[NSNumber numberWithInt:secs[row]] afterDelay:0.3];
+        }
+    }
 }
 
 @end

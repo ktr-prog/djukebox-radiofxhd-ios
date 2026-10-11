@@ -405,6 +405,7 @@
                 [m_parent SendCDsToBackGround];
                 [m_parent OrderGLVAndBlackView];
                 if (which == 8) [self OpenHintUrl];
+                if (which == 9) [self OpenFBWallUrl];
                 [m_searchview setM_showwhat:which];
                 [m_searchview ShowElements:[m_searchview m_showwhat]];
             }
@@ -424,7 +425,7 @@
     } else {
         if ([m_searchview m_showwhat] == 0)
             [m_searchview FitVolumeElements:[DEL GetiPadSize]];
-        if ([m_searchview m_showwhat] == 6 || [m_searchview m_showwhat] == 8) {
+        if ([m_searchview m_showwhat] == 6 || [m_searchview m_showwhat] == 8 || [m_searchview m_showwhat] == 9) {
             [m_searchview StopKeyboardtimer];
         } else if (![m_parent g_scaling]) {
             [m_searchview RestartKeyboardtimer];
@@ -569,7 +570,31 @@
 }
 
 // ---- panel hooks that belonged to the dead web back-end ------------------------------------------------------------
-- (void)OpenHintUrl { }
-- (void)OpenConfigUrl { }
+// URLs of the original (back-end gone: the web panels will report that instead of showing a page)
+- (NSArray *)SerialParts {
+    NSString *sn = [[NSUserDefaults standardUserDefaults] stringForKey:@"SerialNumber"];
+    return (sn != nil) ? [sn componentsSeparatedByString:@"-"] : nil;
+}
+- (void)OpenConfigUrl {
+    NSArray *p = [self SerialParts];
+    NSString *dev = ([p count] >= 2) ? [NSString stringWithFormat:@"%@-%@", [p objectAtIndex:0], [p objectAtIndex:1]] : @"";
+    NSString *pw = ([p count] >= 3) ? [p objectAtIndex:2] : @"";
+    NSString *extra = (p != nil) ? [NSString stringWithFormat:@"&deviceid=%@&password=%@", dev, pw] : @"";
+    NSURL *u = [NSURL URLWithString:[NSString stringWithFormat:@"http://www.tobit.com/rfx-cloud1/index.aspx?radiofxview=true%@", extra]];
+    [m_searchview OpenConfigUrl:[NSURLRequest requestWithURL:u]];
+}
+- (void)OpenHintUrl {
+    NSArray *p = [self SerialParts];
+    NSString *site = ([p count] >= 2) ? [NSString stringWithFormat:@"%@-%@", [p objectAtIndex:0], [p objectAtIndex:1]] : @"";
+    NSString *s = [NSString stringWithFormat:@"http://www.tobit.com/rfx-cloud1dev/dev/Index.aspx?radiofxview=true&page=Empfehlungen.aspx&siteid=%@&vintern=%i&id=%@", site, [DEL GetVIntern], [DEL GetUID]];
+    [m_searchview OpenHintUrl:[NSURLRequest requestWithURL:[NSURL URLWithString:s]]];
+}
+- (void)OpenFBWallUrl {
+    NSArray *p = [self SerialParts];
+    NSString *dev = ([p count] >= 2) ? [NSString stringWithFormat:@"%@-%@", [p objectAtIndex:0], [p objectAtIndex:1]] : @"";
+    NSString *pw = ([p count] >= 3) ? [p objectAtIndex:2] : @"";
+    NSString *s = [NSString stringWithFormat:@"http://www.tobit.com/rfx-cloud1/djukeboxFacebookWall/?dId=%@&pw=%@", dev, pw];
+    [m_searchview OpenFBWallUrl:[NSURLRequest requestWithURL:[NSURL URLWithString:s]]];
+}
 - (void)OpenFBWallUrl { }
 @end

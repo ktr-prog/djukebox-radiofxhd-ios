@@ -145,6 +145,8 @@
         [self setM_lastvolume:vol];
         if ([self m_lastvolume] < 0) [self setM_lastvolume:0.0f];
         if ([self m_lastvolume] > 1.0f) [self setM_lastvolume:1.0f];
+        // original "keyownvolume" state: the app gain stays at 1.0 and the system volume decides the loudness
+        if ([DEL m_useownvolume] != 0) [self setM_lastvolume:1.0f];
 
         border = (((ISIPAD ? -86 : -60) + (ISIPAD ? 0x7e : 0x5a)) >> 1);
         [self setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:1.0f]];
@@ -413,6 +415,18 @@
         break;
     case 7753:
         [d setBool:[sw isOn] forKey:@"RfxDevNoVolume"]; [d synchronize];
+        // same state change as the original "keyownvolume" setting: no app slider, app gain 1.0, system volume rules
+        [DEL GetUseOwnVolume:nil];
+        if ([DEL m_useownvolume] != 0) {
+            [self setM_lastvolume:1.0f];
+        } else {
+            float sv = ([d objectForKey:@"keykioskvolume"] == nil) ? 0.3f : [d floatForKey:@"keykioskvolume"];
+            if (sv != sv || sv < 0) sv = 0.3f;
+            [self setM_lastvolume:fminf(sv, 1.0f)];
+        }
+        [self SetPlayerVolume:[self m_lastvolume]];
+        [[m_glv GetKBView] InstallVolumeSlider:[DEL GetiPadSize]];
+        [[m_glv GetKBView] SetVolSlider:[self m_lastvolume]];
         [m_glv ExecuteServerFlags:[NSNumber numberWithInt:1]];
         break;
     case 7754:
@@ -2780,6 +2794,7 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)SetLastVolumeKiosk {
+    if ([DEL m_useownvolume] != 0) return;      // keep the user's own slider value while the system volume rules
     float v = [self m_lastvolume];
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     [d setFloat:fminf(1.0f, ((double)v < 0.001 ? 0.001f : v)) forKey:@"keykioskvolume"];

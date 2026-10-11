@@ -440,7 +440,10 @@ int gv_kioskflag = 0;
 - (void)GetUseOwnVolume:(NSUserDefaults *)useOwnVolume {
     NSUserDefaults *defs = useOwnVolume != nil ? useOwnVolume : [NSUserDefaults standardUserDefaults];
     NSString *v = [defs stringForKey:@"keyownvolume"];
-    [self setM_useownvolume:(v != nil ? [v intValue] : 0)];
+    int own = (v != nil ? [v intValue] : 0);
+    // dev menu "Lautstärke-Button deaktivieren" switches exactly this original state on (keyownvolume)
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevNoVolume"]) own = 1;
+    [self setM_useownvolume:own];
 }
 
 #pragma mark - database
@@ -621,7 +624,20 @@ int gv_kioskflag = 0;
 - (BOOL)IsActivated:(id)activated { return ([activated StateFlags] >> 27) & 1; }
 - (void)SetDeliveredStatus { [[NSUserDefaults standardUserDefaults] setInteger:-1 forKey:@"TMDeliveryStatus"]; }
 - (int)GetDeliveredStatus { return (int)[[NSUserDefaults standardUserDefaults] integerForKey:@"TMDeliveryStatus"]; }
-- (void)GetVideothek:(id)videothek { }
+// original: list of the downloaded "Videothek" films.  Port: any video file the user put into Library/Caches/Videothek
+// or Documents/Videothek shows up in the panel.
+- (void)GetVideothek:(id)videothek {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *exts = [NSArray arrayWithObjects:@"mp4", @"m4v", @"mov", @"3gp", nil];
+    NSArray *dirs = [NSArray arrayWithObjects:
+        [m_homedir stringByAppendingPathComponent:m_videotheksubdir],
+        [[m_homedir stringByAppendingPathComponent:@"Documents"] stringByAppendingPathComponent:@"Videothek"], nil];
+    for (NSString *dir in dirs) {
+        NSArray *files = [[fm contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
+        for (NSString *f in files)
+            if ([exts containsObject:[[f pathExtension] lowercaseString]]) [videothek addObject:[dir stringByAppendingPathComponent:f]];
+    }
+}
 - (BOOL)CheckGlobalUrl:(id)globalUrl { return globalUrl != nil && [globalUrl length] != 0; }
 - (id)AddStandardParameterAndEscape:(id)standardParameterAndEscape {
     NSRange q = [standardParameterAndEscape rangeOfString:@"?"];

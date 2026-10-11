@@ -2202,7 +2202,7 @@ scroll:
     float fdist = (float)dist;
     float startOffset = (float)offset;
     // Port change: time based, slow ease-in/ease-out (the original ran at a fixed step per frame and peaked at ~36 covers/s).
-    double dur = 1.3 + 0.3 * sqrt((double)fdist) * 2.0;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
+    double dur = (1.3 + 0.3 * sqrt((double)fdist) * 2.0) * 0.9;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
     double t0 = CACurrentMediaTime();
     for (;;) {
         double t = (CACurrentMediaTime() - t0) / dur;
