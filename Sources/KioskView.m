@@ -2048,6 +2048,22 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
     }
 }
 
+// Port diagnostics: one-time on-screen status for the first play request (no debugger on a sideloaded device).
+static void KV_PlayStatus(NSString *text) {
+    static BOOL once = NO;
+    if (once) return;
+    once = YES;
+    NSLog(@"[Play] %@", text);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+        while ([vc presentedViewController]) vc = [vc presentedViewController];
+        if (vc == nil) return;
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Play status" message:text preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [vc presentViewController:a animated:YES completion:nil];
+    });
+}
+
 #pragma mark - playback
 
 - (BOOL)WillPlayJingle { return NO; }   // jingles are a server feature (GetReserved2Val) -- see DEVIATIONS.md
@@ -2066,8 +2082,9 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
 }
 
 - (void)StartOnePlayer:(int)onePlayer withVolume:(float)volume withurl:(NSURL *)url withclipobject:(ClipObject *)clipobject {
-    if (url == nil) return;
-    if ([clipobject m_folderid] == -66 || [clipobject m_folderid] == -44) return;
+    if (url == nil) { KV_PlayStatus([NSString stringWithFormat:@"no file for this clip (id %lld, folder %lld)\nfilepath: %@", [clipobject ID], [clipobject m_folderid], [clipobject m_filepath]]); return; }
+    if ([clipobject m_folderid] == -66 || [clipobject m_folderid] == -44) { KV_PlayStatus(@"clip is a special folder, skipped"); return; }
+    KV_PlayStatus([NSString stringWithFormat:@"play requested\n%@\nexists: %d\nout volume %.2f, mute %d", [url path], (int)[[NSFileManager defaultManager] fileExistsAtPath:[url path]], volume, (int)[DEL g_mute]]);
     if (mMCMixer == nil) mMCMixer = [[MultichannelMixerController alloc] init];
     [self SetMixerFlags];
     [mMCMixer startAUGraph];
