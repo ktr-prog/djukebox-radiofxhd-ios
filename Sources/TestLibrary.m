@@ -35,8 +35,15 @@
         if (![ext isEqualToString:@"mp3"] && ![ext isEqualToString:@"jpg"]) continue;
         NSString *name = [dup stringByReplacingMatchesInString:f options:0 range:NSMakeRange(0, [f length]) withTemplate:@""];
         NSString *to = [dir stringByAppendingPathComponent:name];
-        if ([fm fileExistsAtPath:to]) { ok++; continue; }
-        if ([fm copyItemAtPath:[src stringByAppendingPathComponent:f] toPath:to error:nil]) ok++;
+        NSString *from = [src stringByAppendingPathComponent:f];
+        if ([fm fileExistsAtPath:to]) {
+            // replace a demo file that differs from the bundled one (e.g. regenerated test tones)
+            unsigned long long a = [[fm attributesOfItemAtPath:from error:nil] fileSize];
+            unsigned long long b = [[fm attributesOfItemAtPath:to error:nil] fileSize];
+            if (a == b) { ok++; continue; }
+            [fm removeItemAtPath:to error:nil];
+        }
+        if ([fm copyItemAtPath:from toPath:to error:nil]) ok++;
     }
     return ok;
 }

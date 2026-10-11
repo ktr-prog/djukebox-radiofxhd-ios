@@ -54,41 +54,41 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
                             const AudioTimeStamp *inTimeStamp, UInt32 inBusNumber,
                             UInt32 inNumberFrames, AudioBufferList *ioData) {
     SoundBuffer *sb = (SoundBuffer *)inRefCon + inBusNumber;
-    UInt32 sample = sb->sampleNum;
     if (inNumberFrames == 0) return 0;
 
-    // DEVIATION: the original used 8.24 fixed point end to end.  Current iOS wants Float32 (non-interleaved)
-    // for the mixer and the file reader; the SInt32 storage is simply reinterpreted as float.
     float *outA = (float *)ioData->mBuffers[0].mData;
     float *outB = (float *)ioData->mBuffers[1].mData;
-    float *left  = (float *)sb->data[sb->BufNo];
-    float *right = left + kMCMPlaneSamples;
+    const float *ringL = (const float *)sb->data[0];
+    const float *ringR = (const float *)sb->data[1];
+
+    UInt32 w = __atomic_load_n(&sb->wpos, __ATOMIC_ACQUIRE);
+    UInt32 r = sb->rpos;
+    UInt32 avail = w - r;
+    if (avail > kMCMRingFrames) avail = 0;      // inconsistent (bus is being reset): play silence
+    UInt32 take = (avail < inNumberFrames) ? avail : inNumberFrames;
 
     for (UInt32 i = 0; i < inNumberFrames; i++) {
-        float l = left[sample];
+        float l = 0.0f, rv = 0.0f;
+        if (i < take) {
+            UInt32 idx = (r + i) & (kMCMRingFrames - 1);
+            l = ringL[idx];
+            rv = ringR[idx];
+        }
         if (inBusNumber < 2) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? right[sample] : (sb->mMixBus ? l : 0.0f);
+            outB[i] = sb->isStereo ? rv : (sb->mMixBus ? l : 0.0f);
         } else if (sb->mMixBus) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? right[sample] : l;
+            outB[i] = sb->isStereo ? rv : l;
         } else if (sb->isStereo) {
             outA[i] = l;
-            outB[i] = right[sample];
+            outB[i] = rv;
         } else {
             outA[i] = 0.0f;
             outB[i] = l;
         }
-        sample++;
-        if (sb->numFrames != 0 && sample >= sb->numFrames) {
-            sb->inUse[sb->BufNo] = 0;
-            sb->BufNo ^= 1;
-            sample = 0;
-            left  = (float *)sb->data[sb->BufNo];
-            right = left + kMCMPlaneSamples;
-        }
     }
-    sb->sampleNum = sample;
+    if (take != 0) __atomic_store_n(&sb->rpos, r + take, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -275,6 +275,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     pthread_mutex_lock(&gBusMutex[bus]);
     if (mxafref[bus]) {
         [self enableInput:bus isOn:0.0f];
+        usleep(25000);   // let the render callback leave this bus before it is wiped
         ExtAudioFileDispose(mxafref[bus]);
         mxafref[bus] = NULL;
     }
@@ -413,85 +414,70 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     UInt32 convertedFrames = (UInt32)((double)fileFrames * ratio);
     mDuration[bus] = (int)((double)convertedFrames / (client.mSampleRate / client.mFramesPerPacket));
 
-    sb->numFrames = 100000 / channels;
     sb->asbd = client;
-    sb->sampleNum = 0;
+    sb->wpos = 0;
+    sb->rpos = 0;
 
-    // Two AudioBufferLists (one per half), one mono buffer per channel plane.
+    const UInt32 chunk = 8192;                       // frames per ExtAudioFileRead
+    float *tmp[2] = { (float *)calloc(chunk, sizeof(float)), (float *)calloc(chunk, sizeof(float)) };
     abl0 = (AudioBufferList *)calloc(1, offsetof(AudioBufferList, mBuffers) + channels * sizeof(AudioBuffer));
-    abl1 = (AudioBufferList *)calloc(1, offsetof(AudioBufferList, mBuffers) + channels * sizeof(AudioBuffer));
-    UInt32 planeBytes = 400000 / channels;
     abl0->mNumberBuffers = channels;
-    abl1->mNumberBuffers = channels;
-    for (UInt32 c = 0; c < channels; c++) {
-        abl0->mBuffers[c].mNumberChannels = 1;
-        abl0->mBuffers[c].mDataByteSize = planeBytes;
-        abl0->mBuffers[c].mData = sb->data[0] + (c ? kMCMPlaneSamples : 0);
-        abl1->mBuffers[c].mNumberChannels = 1;
-        abl1->mBuffers[c].mDataByteSize = planeBytes;
-        abl1->mBuffers[c].mData = sb->data[1] + (c ? kMCMPlaneSamples : 0);
-    }
+    float *ringL = (float *)sb->data[0];
+    float *ringR = (float *)sb->data[1];
 
     [self startAUGraph];
     [self enableInput:bus isOn:1.0f];
     pthread_mutex_unlock(&gBusMutex[bus]);
 
-    UInt32 total = 0;
-    while (total < convertedFrames * channels) {
+    BOOL eof = NO;
+    while (!eof) {
         if (mxafref[bus] == NULL) break;
+        UInt32 w = sb->wpos;                          // only this thread writes wpos
+        UInt32 used = w - __atomic_load_n(&sb->rpos, __ATOMIC_ACQUIRE);
+        if (used > kMCMRingFrames) used = kMCMRingFrames;
+        if (kMCMRingFrames - used < chunk) { usleep(5000); continue; }   // ring is full enough
         if (pthread_mutex_lock(&gBusMutex[bus]) != 0) { usleep(100); continue; }
+        if (mxafref[bus] == NULL) { pthread_mutex_unlock(&gBusMutex[bus]); break; }
+        for (UInt32 c = 0; c < channels; c++) {
+            abl0->mBuffers[c].mNumberChannels = 1;
+            abl0->mBuffers[c].mDataByteSize = chunk * sizeof(float);
+            abl0->mBuffers[c].mData = tmp[c < 2 ? c : 1];
+        }
+        UInt32 n = chunk;
+        pthread_mutex_lock(&mMutexExtAudioFileRead);
+        OSStatus e = ExtAudioFileRead(mxafref[bus], &n, abl0);
+        pthread_mutex_unlock(&mMutexExtAudioFileRead);
+        if (e != noErr) { pthread_mutex_unlock(&gBusMutex[bus]); [self ErrorPlayingFile:bus]; break; }
+        if (n == 0) { eof = YES; pthread_mutex_unlock(&gBusMutex[bus]); break; }
+        for (UInt32 i = 0; i < n; i++) {
+            UInt32 idx = (w + i) & (kMCMRingFrames - 1);
+            ringL[idx] = tmp[0][i];
+            ringR[idx] = (channels > 1) ? tmp[1][i] : tmp[0][i];
+        }
+        __atomic_store_n(&sb->wpos, w + n, __ATOMIC_RELEASE);
+        if (!gMCMReported) {
+            gMCMReported = YES;
+            float peak = 0;
+            for (UInt32 q = 0; q < n; q++) if (fabsf(tmp[0][q]) > peak) peak = fabsf(tmp[0][q]);
+            Boolean run = false; if (mGraph) AUGraphIsRunning(mGraph, &run);
+            MCM_Status([NSString stringWithFormat:@"first read: %u frames, peak %.3f\ngraph running: %d\nout vol %.2f\nfile %.0f Hz, %u ch",
+                (unsigned)n, peak, (int)run, [self getOutputVolume], fileFmt.mSampleRate, (unsigned)fileFmt.mChannelsPerFrame]);
+        }
+        pthread_mutex_unlock(&gBusMutex[bus]);
+    }
 
-        if (!sb->inUse[0]) {
-            memset(sb->data[0], 0, 400000);
-            if (mxafref[bus] == NULL) goto locked_break;
-            UInt32 n = sb->numFrames;                    // original requested 100000; clamped to buffer capacity
-            pthread_mutex_lock(&mMutexExtAudioFileRead);
-            OSStatus e = ExtAudioFileRead(mxafref[bus], &n, abl0);
-            pthread_mutex_unlock(&mMutexExtAudioFileRead);
-            if (e != noErr) { [self ErrorPlayingFile:bus]; goto locked_break; }
-            sb->inUse[0] = 1;
-            if (!gMCMReported) {
-                gMCMReported = YES;
-                float peak = 0; float *f = (float *)sb->data[0];
-                for (UInt32 q = 0; q < n; q++) if (fabsf(f[q]) > peak) peak = fabsf(f[q]);
-                Boolean run = false; if (mGraph) AUGraphIsRunning(mGraph, &run);
-                MCM_Status([NSString stringWithFormat:@"first read: %u frames, peak %.3f\ngraph: %@, running: %d\nout vol %.2f, bus vol %.2f\nfile %.0f Hz, %u ch",
-                    (unsigned)n, peak, mGraph ? @"ok" : @"NONE", (int)run, [self getOutputVolume], [self getInputVolume], fileFmt.mSampleRate, (unsigned)fileFmt.mChannelsPerFrame]);
-            }
-            if (n == 0) goto locked_break;               // end of file
-            total += n;
+    if (eof) {                                        // let the buffered audio play out (ring holds up to ~6 s)
+        for (int k = 0; k < 900; k++) {
+            if (mxafref[bus] == NULL) break;
+            if ((SInt32)(sb->wpos - sb->rpos) <= 0) break;
+            usleep(10000);
         }
-        if (sb->inUse[1]) {
-            pthread_mutex_unlock(&gBusMutex[bus]);
-            usleep(1000);
-            continue;
-        }
-        memset(sb->data[1], 0, 400000);
-        if (mxafref[bus] == NULL) {
-            pthread_mutex_unlock(&gBusMutex[bus]);
-            usleep(1000);
-            continue;
-        }
-        {
-            UInt32 n = sb->numFrames;
-            pthread_mutex_lock(&mMutexExtAudioFileRead);
-            OSStatus e = ExtAudioFileRead(mxafref[bus], &n, abl1);
-            pthread_mutex_unlock(&mMutexExtAudioFileRead);
-            if (e != noErr) { [self ErrorPlayingFile:bus]; goto locked_break; }
-            sb->inUse[1] = 1;
-            total += kMCMBufFrames;                      // quirk preserved: counts a full 100000 even when short
-        }
-        pthread_mutex_unlock(&gBusMutex[bus]);
-        usleep(1000);
-        continue;
-    locked_break:
-        pthread_mutex_unlock(&gBusMutex[bus]);
-        break;
     }
 
     mDuration[bus] = 0;
+    free(tmp[0]);
+    free(tmp[1]);
     free(abl0);
-    free(abl1);
     pthread_mutex_lock(&gBusMutex[bus]);
     if (mxafref[bus]) ExtAudioFileDispose(mxafref[bus]);
     mxafref[bus] = NULL;

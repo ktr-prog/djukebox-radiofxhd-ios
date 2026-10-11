@@ -14,13 +14,20 @@
 #define kMCMBufFrames      100000          // SInt32 samples per channel-plane pair, per half buffer
 #define kMCMPlaneSamples   200000          // offset of the right-channel plane inside data[x]
 
+// DEVIATION: the original double buffer (two halves flipped by the render callback, no handshake with the
+// reader thread) glitched on current iOS.  Each bus now owns a single-producer / single-consumer ring buffer:
+// data[0] = left plane, data[1] = right plane (Float32 samples), wpos/rpos are monotonically increasing frame
+// counters (reader thread writes wpos, render callback writes rpos).
+#define kMCMRingFrames     262144          // power of two, <= 400000
 typedef struct SoundBuffer {
     AudioStreamBasicDescription asbd;
-    SInt32   data[2][400000];              // two halves; [left plane | right plane]
-    UInt32   BufNo;                        // half currently being rendered
-    Boolean  inUse[2];                     // half filled by the reader thread, not yet consumed
-    UInt32   numFrames;                    // frames per half
-    UInt32   sampleNum;                    // render cursor
+    SInt32   data[2][400000];              // ring planes (Float32 bit patterns)
+    volatile UInt32 wpos;                  // frames written by the reader thread
+    volatile UInt32 rpos;                  // frames consumed by the render callback
+    UInt32   BufNo;                        // unused (kept from the original layout)
+    Boolean  inUse[2];                     // unused
+    UInt32   numFrames;                    // unused
+    UInt32   sampleNum;                    // unused
     Boolean  isStereo;
     Boolean  mMixBus;
 } SoundBuffer;
