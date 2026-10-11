@@ -22,6 +22,25 @@
     });
 }
 
+// Copies Resources/TestMusic/* into dir.  A repo upload may rename duplicates ("name (1).mp3") and add stray
+// files, so names are normalised and only mp3/jpg files are copied.  Existing files are left alone.
++ (int)CopyDemoFilesTo:(NSString *)dir {
+    NSString *src = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"TestMusic"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSRegularExpression *dup = [NSRegularExpression regularExpressionWithPattern:@" \\(\\d+\\)(?=\\.[A-Za-z0-9]+$)" options:0 error:nil];
+    int ok = 0;
+    for (NSString *f in [fm contentsOfDirectoryAtPath:src error:nil]) {
+        NSString *ext = [[f pathExtension] lowercaseString];
+        if (![ext isEqualToString:@"mp3"] && ![ext isEqualToString:@"jpg"]) continue;
+        NSString *name = [dup stringByReplacingMatchesInString:f options:0 range:NSMakeRange(0, [f length]) withTemplate:@""];
+        NSString *to = [dir stringByAppendingPathComponent:name];
+        if ([fm fileExistsAtPath:to]) { ok++; continue; }
+        if ([fm copyItemAtPath:[src stringByAppendingPathComponent:f] toPath:to error:nil]) ok++;
+    }
+    return ok;
+}
+
 + (void)SeedIfEmptyForServer:(ServerEntry *)server {
     NSMutableString *log = [NSMutableString string];
     if (server == nil) { [self ShowStatus:@"no server entry"]; return; }
@@ -46,7 +65,19 @@
     int existing = [db CountAllSongs];
     [db release];
     [DEL UnlockDB];
-    if (existing != 0) return; // real library (or already seeded): stay silent
+    if (existing != 0) {
+        // Already seeded (or a real library).  Only the demo folder is ever touched: re-copy missing demo
+        // files (e.g. after an earlier build stored them under wrong names).
+        FolderObject *df = [[FolderObject alloc] init];
+        [df setFoldername:@"Test Songs"];
+        [df setFolderid:100];
+        [df setServerid:[server serverid]];
+        NSString *ddir = [NSString stringWithFormat:@"%@%@/", [DEL CreateServerDir:server withfolderobject:df], [DEL Buildfoldername:df]];
+        [df release];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:ddir isDirectory:&isDir] && isDir) [self CopyDemoFilesTo:ddir];
+        return;
+    }
 
     int sid = [server serverid];
     FolderObject *folder = [[FolderObject alloc] init];
@@ -56,14 +87,8 @@
     NSString *dir = [NSString stringWithFormat:@"%@%@/", [DEL CreateServerDir:server withfolderobject:folder], [DEL Buildfoldername:folder]];
     [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    NSArray *files = [fm contentsOfDirectoryAtPath:src error:nil];
-    int copied = 0;
-    for (NSString *f in files) {
-        NSString *to = [dir stringByAppendingPathComponent:f];
-        if ([fm fileExistsAtPath:to]) { copied++; continue; }
-        if ([fm copyItemAtPath:[src stringByAppendingPathComponent:f] toPath:to error:nil]) copied++;
-    }
-    [log appendFormat:@"files copied: %d/%d\nserverid %d\n", copied, (int)[files count], sid];
+    int copied = [self CopyDemoFilesTo:dir];
+    [log appendFormat:@"files copied: %d (expected 9)\nserverid %d\n", copied, sid];
 
     NSString *names[3][2] = { {@"Test Artist A", @"Song One"}, {@"Test Artist B", @"Song Two"}, {@"Test Artist C", @"Song Three"} };
     [DEL LockDB:NO];
