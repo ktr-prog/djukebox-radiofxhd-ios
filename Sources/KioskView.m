@@ -2764,7 +2764,7 @@ static void KV_PlayStatus(NSString *text) {
     if (m_draggingrunningsong) {
         if ([[self m_clips] count] == 0)
             xd = 0;
-        else if ([[[[self m_clips] rfx_objectAtIndex:0] ID] intValue] != [[m_draggingobj ID] intValue])
+        else if ([[[self m_clips] rfx_objectAtIndex:0] ID] != [m_draggingobj ID])
             xd = 0;
     }
     if (m_lastCDXDiff == xd || m_ordering) return;
