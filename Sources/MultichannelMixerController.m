@@ -378,6 +378,43 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     [[NSNotificationCenter defaultCenter] postNotificationName:@"MCM_MSG_ERROR_PLAYING_FILE" object:nil];
 }
 
+// Best effort at "never resample": when this is the only song playing, ask iOS to run the hardware at the
+// file's own sample rate and rebuild the graph at whatever rate it grants.  If the route does not honour the
+// request (built-in speakers often stay at 48 kHz) nothing changes and the file is resampled once, as before.
+// Overlapping songs (crossfades) share one graph rate, so the second song is converted to the first one's rate.
+- (void)AdaptGraphToRate:(double)rate forBus:(int)bus {
+    if (!mGraph || rate < 8000.0) return;
+    if (fabs(rate - mGraphRate) < 1.0) return;
+    for (int i = 0; i < kMCMNumBuses; i++)
+        if (i != bus && mxafref[i] != NULL) return;
+    AVAudioSession *sess = [AVAudioSession sharedInstance];
+    [sess setPreferredSampleRate:rate error:nil];
+    double actual = [sess sampleRate];
+    if (actual < 8000.0 || fabs(actual - mGraphRate) < 1.0) return;
+
+    Boolean running = false;
+    AUGraphIsRunning(mGraph, &running);
+    if (running) AUGraphStop(mGraph);
+    AUGraphUninitialize(mGraph);
+    AudioStreamBasicDescription desc;
+    MCM_FloatFormat(&desc, actual);
+    OSStatus r = noErr;
+    for (UInt32 i = 0; i < kMCMNumBuses && r == noErr; i++)
+        r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc));
+    if (r == noErr)
+        r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc));
+    if (r != noErr) {                                   // could not switch: go back to the old rate
+        MCM_FloatFormat(&desc, mGraphRate);
+        for (UInt32 i = 0; i < kMCMNumBuses; i++)
+            AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc));
+        AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc));
+    } else {
+        mGraphRate = actual;
+    }
+    AUGraphInitialize(mGraph);
+    if (running) AUGraphStart(mGraph);
+}
+
 // ---- reader thread -------------------------------------------------------------------------
 - (void)PlayFileInBackground:(id)job {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -415,6 +452,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     if (ExtAudioFileGetProperty(mxafref[bus], kExtAudioFileProperty_FileDataFormat, &size, &fileFmt) != noErr)
         goto fail;
 
+    [self AdaptGraphToRate:fileFmt.mSampleRate forBus:bus];
     double ratio = ((mGraphRate > 0) ? mGraphRate : 44100.0) / fileFmt.mSampleRate;       // computed before the format is overridden
     AudioStreamBasicDescription client = fileFmt;
     if (mPlayMono) {
@@ -484,8 +522,8 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
             float peak = 0;
             for (UInt32 q = 0; q < n; q++) if (fabsf(tmp[0][q]) > peak) peak = fabsf(tmp[0][q]);
             Boolean run = false; if (mGraph) AUGraphIsRunning(mGraph, &run);
-            MCM_Status([NSString stringWithFormat:@"first read: %u frames, peak %.3f\ngraph running: %d\nout vol %.2f\nfile %.0f Hz, %u ch",
-                (unsigned)n, peak, (int)run, [self getOutputVolume], fileFmt.mSampleRate, (unsigned)fileFmt.mChannelsPerFrame]);
+            MCM_Status([NSString stringWithFormat:@"first read: %u frames, peak %.3f\ngraph running: %d\nout vol %.2f\nfile %.0f Hz, %u ch\ngraph %.0f Hz (%@)",
+                (unsigned)n, peak, (int)run, [self getOutputVolume], fileFmt.mSampleRate, (unsigned)fileFmt.mChannelsPerFrame, mGraphRate, (fabs(mGraphRate - fileFmt.mSampleRate) < 1.0) ? @"native, no resampling" : @"resampled once"]);
         }
         pthread_mutex_unlock(&gBusMutex[bus]);
     }

@@ -58,6 +58,7 @@ typedef struct SoundBuffer {
 - (void)setPlayMono;
 - (BOOL)GetPlayMono;
 - (void)stopAUGraph;
+- (void)AdaptGraphToRate:(double)rate forBus:(int)bus;
 - (void)startAUGraph;
 - (void)setOutputVolume:(float)value;
 - (float)getOutputVolume;

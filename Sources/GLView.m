@@ -195,11 +195,12 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
     m_anglediff = 14.583333333333334;           // 0x402CAAAAAAAAAAAB
     cache = [[DataCache alloc] initWithCapacity:0x6e];
     [cache SetGLPointer:self];
-    m_transangles[1] = 356.0;
-    m_transangles[0] = 356.0 - m_anglediff;
+    // (all four fade angles are 1.5 degrees lower than the original, matching the centred flow)
+    m_transangles[1] = 354.5;
+    m_transangles[0] = 354.5 - m_anglediff;
     if (m_transangles[0] < 0) m_transangles[0] += 360.0;
-    m_transangles[2] = 0.0;
-    m_transangles[3] = m_anglediff + 184.0;
+    m_transangles[2] = -1.5;
+    m_transangles[3] = m_anglediff + 182.5;
 
     paintorder = [[NSMutableArray alloc] init];
     pictureorder = [[NSMutableArray alloc] init];
@@ -556,7 +557,9 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         FlowCoverRecord *tile = [self getTileAtIndex:tileIdx withCreate:NO];
 
         // angle of this cover
-        double ang = ((double)(float)k * m_anglediff + 94.0 + 90.0) - m_anglediff * frac;
+        // DEVIATION: the original constant was 94.0, which puts the middle cover (k = 6) at 271.5 degrees instead of
+        // 270 and shifts the whole flow to the right.  92.5 centres it; the fade angles below move with it.
+        double ang = ((double)(float)k * m_anglediff + 92.5 + 90.0) - m_anglediff * frac;
         while (ang > 360.0) ang += -360.0;
         double ang2 = ang + 180.0;
         while (ang2 > 360.0) ang2 += -360.0;

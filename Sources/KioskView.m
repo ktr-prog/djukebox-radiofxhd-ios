@@ -2740,6 +2740,12 @@ static void KV_PlayStatus(NSString *text) {
 
 - (void)RotationTimerFunction {
     if (!m_cantransform || m_cliptorotate == nil || m_blackview != nil) return;
+    // m_cliptorotate is not retained: make sure the clip still exists before touching it (pointer compare only)
+    if ([[self m_clips] indexOfObjectIdenticalTo:m_cliptorotate] == NSNotFound && m_cliptorotate != m_draggingobj) {
+        m_cliptorotate = nil;
+        m_rotateclip = NO;
+        return;
+    }
     m_angle += 2;
     if (m_angle > 360) m_angle -= 360;
     [[m_cliptorotate m_imgv] setTransform:CGAffineTransformMakeRotation((float)(((double)m_angle / 180.0) * M_PI))];
@@ -2882,7 +2888,8 @@ static void KV_PlayStatus(NSString *text) {
             }
         }
         if (CACurrentMediaTime() - lastCheck > 1.0) {
-            [self CheckRunningSongLeftTime];
+            // main thread only: it reads the queue and the dragged clip, which the UI deletes at any time
+            [self performSelectorOnMainThread:@selector(CheckRunningSongLeftTime) withObject:nil waitUntilDone:NO];
             lastCheck = CACurrentMediaTime();
         }
         [NSThread sleepForTimeInterval:bg ? 0.3 : 0.05];
