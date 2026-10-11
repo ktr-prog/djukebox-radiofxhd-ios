@@ -390,14 +390,21 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     for (int i = 0; i < kMCMNumBuses; i++)
         if (i != bus && mxafref[i] != NULL) return;
     AVAudioSession *sess = [AVAudioSession sharedInstance];
-    [sess setPreferredSampleRate:rate error:nil];
-    double actual = [sess sampleRate];
-    if (actual < 8000.0 || fabs(actual - mGraphRate) < 1.0) return;
-
     Boolean running = false;
     AUGraphIsRunning(mGraph, &running);
     if (running) AUGraphStop(mGraph);
     AUGraphUninitialize(mGraph);
+    // The hardware rate only changes when the session is re-activated with the new preferred rate; then the
+    // device (DAC / USB / Bluetooth) runs at the file's rate and nothing is resampled.
+    [sess setActive:NO error:nil];
+    [sess setPreferredSampleRate:rate error:nil];
+    [sess setActive:YES error:nil];
+    double actual = [sess sampleRate];
+    if (actual < 8000.0 || fabs(actual - mGraphRate) < 1.0) {
+        AUGraphInitialize(mGraph);
+        if (running) AUGraphStart(mGraph);
+        return;
+    }
     AudioStreamBasicDescription desc;
     MCM_FloatFormat(&desc, actual);
     OSStatus r = noErr;
@@ -473,6 +480,18 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
         sb->mMixBus = 1;
     }
     OSStatus stFmt = ExtAudioFileSetProperty(mxafref[bus], kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client);
+    if (stFmt == noErr && fabs(fileFmt.mSampleRate - client.mSampleRate) > 1.0) {
+        // unavoidable conversion (device cannot run at the file's rate): use the best sample-rate converter
+        AudioConverterRef conv = NULL;
+        UInt32 csz = sizeof(conv);
+        if (ExtAudioFileGetProperty(mxafref[bus], kExtAudioFileProperty_AudioConverter, &csz, &conv) == noErr && conv != NULL) {
+            UInt32 q = kAudioConverterQuality_Max, cx = kAudioConverterSampleRateConverterComplexity_Mastering;
+            AudioConverterSetProperty(conv, kAudioConverterSampleRateConverterQuality, sizeof(q), &q);
+            AudioConverterSetProperty(conv, kAudioConverterSampleRateConverterComplexity, sizeof(cx), &cx);
+            CFArrayRef cfg = NULL;
+            ExtAudioFileSetProperty(mxafref[bus], kExtAudioFileProperty_ConverterConfig, sizeof(cfg), &cfg);
+        }
+    }
     if (stFmt != noErr) {
         if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"client format rejected: %d", (int)stFmt]); }
         goto fail;

@@ -969,17 +969,24 @@ static void RemoveClipViews(ClipObject *c) {
     m_cantransform = NO;
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
         ClipObject *c = [[[self m_clips] rfx_objectAtIndex:i] retain];
-        [[c m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
         CGRect fr = [self GetFrameForDragPic:(int)i];
-        [[c m_imgv] setFrame:fr];
+        // a spinning CD keeps its rotation (resetting it inside the animation block made the spin snap back and stutter)
+        BOOL spin = (mode == 1 && c == m_cliptorotate && [self m_rotateclip]);
+        if (spin) {
+            [[c m_imgv] setBounds:CGRectMake(0, 0, fr.size.width, fr.size.height)];
+            [[c m_imgv] setCenter:CGPointMake(CGRectGetMidX(fr), CGRectGetMidY(fr))];
+        } else {
+            [[c m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
+            [[c m_imgv] setFrame:fr];
+        }
         [[c m_imgv] setAlpha:1.0f];
         if ([c m_swapimgv] != nil) {
-            [[c m_swapimgv] setFrame:[[c m_imgv] frame]];
+            if (spin) { [[c m_swapimgv] setBounds:CGRectMake(0, 0, fr.size.width, fr.size.height)]; [[c m_swapimgv] setCenter:CGPointMake(CGRectGetMidX(fr), CGRectGetMidY(fr))]; }
+            else [[c m_swapimgv] setFrame:fr];
             [[c m_swapimgv] setAlpha:0.0f];
         }
         if ([c m_imgvtext] != nil) {
-            CGRect f = [[c m_imgv] frame];
-            [[c m_imgvtext] setFrame:CGRectMake(f.origin.x - 350.0f, (f.origin.y - f.size.height) - 23.0f,
+            [[c m_imgvtext] setFrame:CGRectMake(fr.origin.x - 350.0f, (fr.origin.y - fr.size.height) - 23.0f,
                                                 (float)(THUMB + 0x2bc), (float)((double)THUMB * 3.0 * 0.25))];
             [[c m_imgvtext] setAlpha:0.0f];
         }
