@@ -246,6 +246,8 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             if (m_volslider != nil) [m_volslider setHidden:NO];
             if (m_voloverlay != nil) [m_voloverlay setHidden:NO];
             break;
+        case 5:
+            break;
         case 2: {
             double last = [[NSUserDefaults standardUserDefaults] doubleForKey:@"keylastcopiedsong"];
             if (last <= 0) {

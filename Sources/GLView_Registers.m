@@ -359,7 +359,7 @@
             }
             [self ToggleAni];
             break;
-        case 5:     // light bulb: the tutorial pictures (the original's help web view is gone with the server)
+        case 5:
             if ([m_searchview m_keyboardshown]) [self ToggleAni];
             [m_parent ShowTutorial];
             break;

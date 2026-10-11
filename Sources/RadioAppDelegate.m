@@ -256,12 +256,17 @@ int gv_kioskflag = 0;
     if ([dev respondsToSelector:@selector(isMultitaskingSupported)]) {
         if ([dev isMultitaskingSupported]) {
             m_isinbackground = YES;
+            [m_kh FlushGLForBackground];
             [m_kh StopOverviewTimer];
+            [[AVAudioSession sharedInstance] setActive:YES error:nil];   // keep the session (and the lock screen entry) alive
         }
     }
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application {
+    // Port addition: iOS kills an app that issues OpenGL calls in the background; flush everything
+    // that is still queued before the screen locks. Playback itself keeps running (audio background mode).
+    [m_kh FlushGLForBackground];
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {
@@ -345,11 +350,17 @@ int gv_kioskflag = 0;
 }
 
 - (void)audioSessionInterrupted:(NSNotification *)noti {
-    NSUInteger type = [[[noti userInfo] objectForKey:AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
-    if (type == AVAudioSessionInterruptionTypeBegan)
+    NSDictionary *info = [noti userInfo];
+    NSUInteger type = [[info objectForKey:AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    if (type == AVAudioSessionInterruptionTypeBegan) {
+        // Port addition: locking the screen / backgrounding must never stop the music. Only a real
+        // interruption (call, alarm, other app taking the session) pauses it.
+        NSNumber *suspended = [info objectForKey:AVAudioSessionInterruptionWasSuspendedKey];
+        if (suspended != nil && [suspended boolValue]) return;
         [self InterruptFunction];
-    else
+    } else {
         [self EndInterruptFunction];
+    }
 }
 
 - (void)InterruptFunction {
@@ -361,11 +372,11 @@ int gv_kioskflag = 0;
     }
     [self StopStreamer];
     [m_kh StopPlayers];
-    [[AVAudioSession sharedInstance] setActive:NO error:nil];
 }
 
 - (void)EndInterruptFunction {
     [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    if (m_waslastplaying == 2 && [m_kh IsPlayingClips]) m_waslastplaying = 0;   // still playing, nothing to resume
     if (m_waslastplaying != 0) {
         if (m_waslastplaying == 2)
             [m_kh StartFirstFolderSong:[NSNumber numberWithInt:0]];

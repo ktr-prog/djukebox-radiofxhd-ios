@@ -18,6 +18,7 @@
 - (void)SetWdrPlayerVolume:(float)v;
 - (void)ReStartIfNeeded;
 - (void)ExternDraw:(int)v;
+- (void)FlushGLForBackground;
 - (void)ResetTACTime:(double)t;
 - (BOOL)GetCancelCopy;
 @end

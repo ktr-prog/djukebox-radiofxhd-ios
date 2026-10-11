@@ -12,7 +12,6 @@
     MultichannelMixerController *mMCMixer;
     UILabel *m_label;
     UILabel *m_ratelabel;
-    int m_tutorialpage;
     UIView *m_divider;
     GLView *m_glv;
     NSMutableArray *m_clips;
@@ -52,6 +51,7 @@
     id m_rcon;                          // remote-control connection (never set offline)
     NSMutableDictionary *m_nowdict;     // "<channel>_picx" -> now-playing picture
     BOOL m_helppicanimating;
+    int m_tutorialpage;
     BOOL m_fiveoclockflag;
     double m_limitinittime;
     double m_limitduration;
@@ -296,7 +296,11 @@
 - (id)GetRCConDeviceID;
 - (UIImage *)GetSongPictureFor:(NSString *)title withinterpret:(NSString *)interpret;
 - (void)StartHelpPictureAni;
+- (void)FlushGLForBackground;
 - (void)ShowTutorial;
+- (void)ShowTutorialPage;
+- (void)TutorialTap:(UITapGestureRecognizer *)g;
+- (void)CloseTutorial;
 - (NSMutableDictionary *)m_nowdict;
 - (void)InsertIntoRemoteQueue:(int)type withpoint:(CGPoint)point witharg1:(long long)arg1 witharg2:(int)arg2
                      witharg3:(int)arg3 withleaveoutclient:(long)leaveoutclient witharg4:(int)arg4;

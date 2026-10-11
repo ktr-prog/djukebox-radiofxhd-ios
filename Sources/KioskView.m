@@ -685,6 +685,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
     [self OrderClipPics:[NSNumber numberWithInt:1]];
     [self StartAudioPlayer:pick withAniNext:NO witharg1:1];
     [self SendCDsToBackGround];
+    [m_glv SelectClipImmediately:pick];
 }
 
 - (BOOL)IsInArray:(FolderObject *)inArray witharray:(NSArray *)array {
@@ -2552,6 +2553,8 @@ static void KV_PlayStatus(NSString *text) {
 - (void)ContinuePlayers { if (mMCMixer != nil) [mMCMixer startAUGraph]; }
 - (void)PausePlayers { if (mMCMixer != nil) [mMCMixer stopAUGraph]; }
 
+- (void)FlushGLForBackground { [m_glv FinishGL]; }
+
 - (BOOL)IsPlayingClips {
     return (mMCMixer != nil && [mMCMixer isPlaying]) ? YES : NO;
 }
@@ -3016,60 +3019,50 @@ static void KV_PlayStatus(NSString *text) {
 // The animated help page (web/video help) is not part of the offline build.
 - (void)StartHelpPictureAni { }
 
-#pragma mark - tutorial (light bulb button)
+#pragma mark - help overlay (light bulb)
 
-// Port addition: the original's help panel was a web page from the server.  The app still ships the seven gesture
-// pictures, so the bulb pages through them: tap right = next, tap left = previous, X = close.
 static NSArray *TutorialPages(void) {
     return [NSArray arrayWithObjects:
-        [NSArray arrayWithObjects:@"titel-finden", @"Browse your songs: swipe left or right over the covers.", nil],
-        [NSArray arrayWithObjects:@"reihenfolge-aendern", @"Queue a song: drag a cover down onto the row of discs at the bottom.", nil],
-        [NSArray arrayWithObjects:@"titel-abwaehlen", @"Remove a song from the queue: drag its disc up onto the cover flow.", nil],
-        [NSArray arrayWithObjects:@"titel-abbrechen", @"Remove the playing song: drag the first disc up onto the cover flow.", nil],
-        [NSArray arrayWithObjects:@"titel-loeschen", @"Hide a song: wipe back and forth over its cover.", nil],
-        [NSArray arrayWithObjects:@"lautstaerke-aendern", @"Change the volume: pinch or spread two fingers.", nil],
-        [NSArray arrayWithObjects:@"kollektionen-anzeigen", @"Show all collections: pinch the cover flow together.", nil],
+        [NSArray arrayWithObjects:@"titel-finden", @"Titel auswählen", nil],
+        [NSArray arrayWithObjects:@"reihenfolge-aendern", @"Reihenfolge ändern", nil],
+        [NSArray arrayWithObjects:@"titel-abwaehlen", @"Titel aus der Queue entfernen", nil],
+        [NSArray arrayWithObjects:@"titel-abbrechen", @"Titel abbrechen", nil],
+        [NSArray arrayWithObjects:@"titel-loeschen", @"Titel entfernen", nil],
+        [NSArray arrayWithObjects:@"lautstaerke-aendern", @"Lautstärke ändern", nil],
+        [NSArray arrayWithObjects:@"kollektionen-anzeigen", @"Kollektion auswählen", nil],
         nil];
 }
 
 - (void)ShowTutorial {
     if ([self viewWithTag:7731] != nil) return;
-    CGSize sz = [self frame].size;
-    UIView *ov = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sz.width, sz.height)];
+    m_tutorialpage = 0;
+    CGRect b = [self bounds];
+    UIView *ov = [[UIView alloc] initWithFrame:b];
     [ov setTag:7731];
     [ov setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.92f]];
     [ov setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake((sz.width - 508.0f) * 0.5f, (sz.height - 454.0f) * 0.5f - 30.0f, 508.0f, 454.0f)];
+    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake((b.size.width - 508.0f) * 0.5f, (b.size.height - 454.0f) * 0.5f - 30.0f, 508.0f, 454.0f)];
     [iv setTag:7732];
     [iv setContentMode:UIViewContentModeScaleAspectFit];
     [iv setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin];
     [ov addSubview:iv];
     [iv release];
-    UILabel *cap = [[UILabel alloc] initWithFrame:CGRectMake(40.0f, sz.height * 0.5f + 205.0f, sz.width - 80.0f, 50.0f)];
+    UILabel *cap = [[UILabel alloc] initWithFrame:CGRectMake(40.0f, (b.size.height + 454.0f) * 0.5f - 10.0f, b.size.width - 80.0f, 60.0f)];
     [cap setTag:7733];
-    [cap setTextColor:[UIColor whiteColor]];
     [cap setBackgroundColor:[UIColor clearColor]];
+    [cap setTextColor:[UIColor whiteColor]];
+    [cap setFont:[UIFont boldSystemFontOfSize:22.0f]];
     [cap setTextAlignment:NSTextAlignmentCenter];
     [cap setNumberOfLines:2];
-    [cap setFont:[UIFont systemFontOfSize:20.0f]];
     [cap setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin];
     [ov addSubview:cap];
     [cap release];
-    UILabel *cnt = [[UILabel alloc] initWithFrame:CGRectMake(0, sz.height - 40.0f, sz.width, 24.0f)];
-    [cnt setTag:7734];
-    [cnt setTextColor:[UIColor colorWithWhite:0.6f alpha:1.0f]];
-    [cnt setBackgroundColor:[UIColor clearColor]];
-    [cnt setTextAlignment:NSTextAlignmentCenter];
-    [cnt setFont:[UIFont systemFontOfSize:15.0f]];
-    [cnt setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin];
-    [ov addSubview:cnt];
-    [cnt release];
     UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
-    [x setFrame:CGRectMake(sz.width - 70.0f, 14.0f, 56.0f, 44.0f)];
-    [x setTitle:@"\u2715" forState:UIControlStateNormal];
+    [x setFrame:CGRectMake(b.size.width - 70.0f, 20.0f, 50.0f, 50.0f)];
+    [x setTitle:@"✕" forState:UIControlStateNormal];
+    [x setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [[x titleLabel] setFont:[UIFont systemFontOfSize:26.0f]];
-    [x setTintColor:[UIColor whiteColor]];
-    [x setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin];
+    [x setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin];
     [x addTarget:self action:@selector(CloseTutorial) forControlEvents:UIControlEventTouchUpInside];
     [ov addSubview:x];
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(TutorialTap:)];
@@ -3078,35 +3071,38 @@ static NSArray *TutorialPages(void) {
     [ov setAlpha:0.0f];
     [self addSubview:ov];
     [ov release];
-    m_tutorialpage = 0;
     [self ShowTutorialPage];
     [UIView animateWithDuration:0.25 animations:^{ [ov setAlpha:1.0f]; }];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(CloseTutorial) object:nil];
+    [self performSelector:@selector(CloseTutorial) withObject:nil afterDelay:30.0];
 }
 
 - (void)ShowTutorialPage {
     UIView *ov = [self viewWithTag:7731];
     if (ov == nil) return;
     NSArray *pages = TutorialPages();
-    if (m_tutorialpage < 0) m_tutorialpage = 0;
     if (m_tutorialpage >= (int)[pages count]) { [self CloseTutorial]; return; }
     NSArray *p = [pages objectAtIndex:m_tutorialpage];
-    [(UIImageView *)[ov viewWithTag:7732] setImage:[UIImage imageNamed:[p objectAtIndex:0]]];
+    NSString *path = [[NSBundle mainBundle] pathForResource:[p objectAtIndex:0] ofType:@"png"];
+    UIImage *img = path ? [UIImage imageWithContentsOfFile:path] : nil;
+    [(UIImageView *)[ov viewWithTag:7732] setImage:img];
     [(UILabel *)[ov viewWithTag:7733] setText:[p objectAtIndex:1]];
-    [(UILabel *)[ov viewWithTag:7734] setText:[NSString stringWithFormat:@"%d / %d   (tap right: next, tap left: back)", m_tutorialpage + 1, (int)[pages count]]];
 }
 
-- (void)TutorialTap:(UITapGestureRecognizer *)tap {
-    CGPoint pt = [tap locationInView:[tap view]];
-    if (pt.x < [[tap view] bounds].size.width * 0.33f) m_tutorialpage--;
-    else m_tutorialpage++;
+- (void)TutorialTap:(UITapGestureRecognizer *)g {
+    m_tutorialpage++;
     [self ShowTutorialPage];
 }
 
 - (void)CloseTutorial {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(CloseTutorial) object:nil];
     UIView *ov = [self viewWithTag:7731];
     if (ov == nil) return;
-    [UIView animateWithDuration:0.2 animations:^{ [ov setAlpha:0.0f]; } completion:^(BOOL f) { [ov removeFromSuperview]; }];
+    [ov setTag:0];
+    [UIView animateWithDuration:0.25 animations:^{ [ov setAlpha:0.0f]; } completion:^(BOOL f){ [ov removeFromSuperview]; }];
 }
+
+
 
 
 // Started the promo-video ("TP") tile animation of the overview; the video tile is not built offline.

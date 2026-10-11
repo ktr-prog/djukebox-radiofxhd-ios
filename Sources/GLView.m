@@ -24,7 +24,7 @@
 #define ISIPAD ([DEL m_isipad])
 
 // original globals gv_34e760 / gv_34e764 (texture edge for normal tiles / channel tiles) and data_00398838
-int  gv_texsize      = 0xc4;    // 196 (shared with the prescroller thread)
+int  gv_texsize      = 0x200;   // 512 (original: 196; raised so the covers are no longer pixelated; 512*512*4 == the 1 MB GData buffer)
 int  gv_texsizeradio = 0x200;   // 512
 static BOOL gv_texfallback  = NO;
 
@@ -1969,6 +1969,40 @@ scroll:
 }
 
 
+
+// Port addition: centres the cover of a clip without any animation (used when the app autoplays at startup).
+- (void)SelectClipImmediately:(ClipObject *)clip {
+    if (clip == nil) return;
+    [m_arraylock lock];
+    int found = -1;
+    NSArray *tiles = [self m_tilearray];
+    for (unsigned i = 0; i < [tiles count] && found < 0; i++) {
+        ClipObject *c = [tiles objectAtIndex:i];
+        if ([c ID] == [clip ID]) { found = (int)i; break; }
+        NSArray *tr = [c m_tracks];
+        for (unsigned k = 0; tr != nil && k < [tr count]; k++)
+            if ([[tr objectAtIndex:k] ID] == [clip ID]) { found = (int)i; break; }
+    }
+    [m_arraylock unlock];
+    if (found < 0) return;
+    if (timer != nil) [self endCircleAnimation:NO];
+    offset = (double)found;
+    [self checkOffset];
+    [self drawView];
+    ClipObject *c = [[self m_tilearray] objectAtIndex:(unsigned)found];
+    [m_interpretlabel setText:[[c m_interpret] uppercaseString]];
+    [m_titlelabel setText:[[c m_title] uppercaseString]];
+    [self ReInitThread];
+}
+
+- (void)FinishGL {
+    if (context == nil) return;
+    EAGLContext *old = [EAGLContext currentContext];
+    [EAGLContext setCurrentContext:context];
+    glFinish();
+    if (old != context) [EAGLContext setCurrentContext:old];
+}
+
 #pragma mark - turning animation
 
 - (void)startCircleAnimation:(double)circleAnimation {
@@ -1980,7 +2014,9 @@ scroll:
     if (target < startOff) startSpeed = -startSpeed;
     runDelta = fabs(startSpeed / 9.0);
     startTime = CACurrentMediaTime();
-    timer = [NSTimer scheduledTimerWithTimeInterval:0.03 target:self selector:@selector(driveCircleAnimation) userInfo:nil repeats:YES];
+    CADisplayLink *dl = [CADisplayLink displayLinkWithTarget:self selector:@selector(driveCircleAnimation)];
+    [dl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    timer = dl;
 }
 
 - (void)driveCircleAnimation {

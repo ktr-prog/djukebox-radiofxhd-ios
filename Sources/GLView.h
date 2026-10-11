@@ -21,7 +21,7 @@
     NSMutableArray *pictureorder;  // +88
     unsigned char *GData;          // malloc(1 MB) scratch for texture upload  // +92
     unsigned char *GDataThread;    // malloc(1 MB), used by the loader thread  // +1048668
-    NSTimer *timer;  // +2097244
+    id timer;  // CADisplayLink, +2097244
     double startTime;  // +2097248
     double startOff;  // +2097256
     double startPos;  // +2097264
@@ -289,6 +289,8 @@
 - (void)IdleTimerFunc;
 - (id)GetSearchText;
 - (int)GetSearchTextLen;
+- (void)FinishGL;
+- (void)SelectClipImmediately:(ClipObject *)clip;
 - (void)startCircleAnimation:(double)circleAnimation;
 - (void)driveCircleAnimation;
 - (void)updateCircleAnimationAtTime:(double)circleAnimationAtTime;

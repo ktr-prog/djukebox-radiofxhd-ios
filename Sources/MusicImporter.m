@@ -122,17 +122,20 @@
         if ([album length] == 0) album = @"";
 
         // ---- cover: embedded, else a same-named / folder.jpg / cover.jpg picture next to the file
+        // The cover is kept byte-for-byte: embedded art or the sidecar picture is copied unchanged
+        // (no resize / re-encode); only the small thumbnail is generated.
         UIImage *cover = (art != nil) ? [UIImage imageWithData:art] : nil;
+        NSData *coverBytes = (cover != nil) ? art : nil;
         if (cover == nil) {
             NSString *dir = [src stringByDeletingLastPathComponent];
             NSString *stem = [src stringByDeletingPathExtension];
             for (NSString *cand in [NSArray arrayWithObjects:[stem stringByAppendingPathExtension:@"jpg"], [stem stringByAppendingPathExtension:@"png"],
                                     [dir stringByAppendingPathComponent:@"cover.jpg"], [dir stringByAppendingPathComponent:@"folder.jpg"],
                                     [dir stringByAppendingPathComponent:@"cover.png"], [dir stringByAppendingPathComponent:@"folder.png"], nil]) {
-                if ([fm fileExistsAtPath:cand]) { cover = [UIImage imageWithContentsOfFile:cand]; if (cover != nil) break; }
+                if ([fm fileExistsAtPath:cand]) { coverBytes = [NSData dataWithContentsOfFile:cand]; cover = [UIImage imageWithData:coverBytes]; if (cover != nil) break; coverBytes = nil; }
             }
         }
-        if (cover == nil) cover = [self PlaceholderForTitle:title];
+        if (cover == nil) { cover = [self PlaceholderForTitle:title]; coverBytes = nil; }
 
         // ---- folder
         FolderObject *folder = [folders objectForKey:folderName];
@@ -171,7 +174,7 @@
         BOOL moved = [fm moveItemAtPath:src toPath:dest error:&err];
         if (!moved) moved = [fm copyItemAtPath:src toPath:dest error:&err] && [fm removeItemAtPath:src error:nil];
         if (moved) {
-            NSData *big = [self SquareJPEG:cover size:196.0f];
+            NSData *big = (coverBytes != nil) ? coverBytes : [self SquareJPEG:cover size:512.0f];
             NSData *small = [self SquareJPEG:cover size:40.0f];
             if (big) [big writeToFile:pic atomically:YES];
             if (small) [small writeToFile:[DEL BuildSmallPicpath:pic] atomically:YES];

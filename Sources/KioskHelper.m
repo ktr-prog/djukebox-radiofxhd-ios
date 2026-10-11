@@ -51,6 +51,10 @@
 - (void)ReStartIfNeeded {
     [KV ReStartIfNeeded];
 }
+- (void)FlushGLForBackground {
+    [KV FlushGLForBackground];
+}
+
 - (void)ExternDraw:(int)externDraw {
     [KV ExternDraw:externDraw];
 }
