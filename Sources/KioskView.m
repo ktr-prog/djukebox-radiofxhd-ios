@@ -360,7 +360,9 @@
     int count = [dbop GetCompleteSongCount];
     [DEL UnlockDB];
     [dbop release];
-    if (count < 10) {
+    // DEVIATION: the original showed this "fill your library at my.djukebox.com" screen below 10 songs (the
+    // cloud would fill it up).  Offline there is no cloud, so it only appears for a completely empty library.
+    if (count < 1) {
         if (m_loadingscreen != nil) return;
         UIImage *img = [UIImage imageNamed:@"loadingscreen.png"];
         CGRect fr = [self frame];
