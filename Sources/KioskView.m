@@ -21,6 +21,14 @@
 
 // Fast switching / queue dragging can touch the queue while it is changing; an out-of-range index must not
 // take the whole app down.  These behave like the NSMutableArray methods but ignore a bad index.
+@interface NSObject (RfxGrave)
++ (void)rfx_graveRelease:(id)o;
+@end
+@implementation NSObject (RfxGrave)
++ (void)rfx_graveRelease:(id)o { [self performSelector:@selector(rfx_graveRelease2:) withObject:o afterDelay:10.0]; }
++ (void)rfx_graveRelease2:(id)o { [o release]; }
+@end
+
 @interface NSMutableArray (RfxSafeQueue)
 - (id)rfx_objectAtIndex:(NSUInteger)i;
 - (void)rfx_removeObjectAtIndex:(NSUInteger)i;
@@ -28,7 +36,14 @@
 @end
 @implementation NSMutableArray (RfxSafeQueue)
 - (id)rfx_objectAtIndex:(NSUInteger)i { return (i < [self count]) ? [self objectAtIndex:i] : nil; }
-- (void)rfx_removeObjectAtIndex:(NSUInteger)i { if (i < [self count]) [self removeObjectAtIndex:i]; }
+- (void)rfx_removeObjectAtIndex:(NSUInteger)i {
+    if (i >= [self count]) return;
+    // Several ivars (m_cliptorotate, pending performSelectors, animations) point at clips without retaining them.
+    // Keep a removed clip alive for a while so none of them can touch freed memory.
+    id o = [[self objectAtIndex:i] retain];
+    [self removeObjectAtIndex:i];
+    [NSObject performSelectorOnMainThread:@selector(rfx_graveRelease:) withObject:o waitUntilDone:NO];
+}
 - (void)rfx_insertObject:(id)o atIndex:(NSUInteger)i { if (o == nil) return; if (i > [self count]) i = [self count]; [self insertObject:o atIndex:i]; }
 @end
 
@@ -175,6 +190,17 @@
         [m_label release];
         [self SetDebugText:@" "];
 
+        // port addition: small always-on sample-rate readout (file rate / engine rate / device rate)
+        m_ratelabel = [[UILabel alloc] initWithFrame:CGRectMake(12.0f, 6.0f, 520.0f, 18.0f)];
+        [m_ratelabel setTextColor:[UIColor colorWithWhite:0.85f alpha:1.0f]];
+        [m_ratelabel setBackgroundColor:[UIColor clearColor]];
+        [m_ratelabel setFont:[UIFont fontWithName:@"Courier" size:12.0f]];
+        [m_ratelabel setText:@"sample rate: -"];
+        [m_ratelabel setUserInteractionEnabled:NO];
+        [self addSubview:m_ratelabel];
+        [m_ratelabel release];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(RateInfo:) name:@"RfxSampleRateInfo" object:nil];
+
         m_blackborderview = [[UIView alloc] initWithFrame:[self GetBlackBorderViewRect]];
         [m_blackborderview setBackgroundColor:[UIColor blackColor]];
         [self addSubview:m_blackborderview];
@@ -272,6 +298,11 @@
     [self SetDebugText:@""];
 }
 
+- (void)RateInfo:(NSNotification *)n {
+    [m_ratelabel setText:[[n userInfo] objectForKey:@"text"]];
+    [self bringSubviewToFront:m_ratelabel];
+}
+
 - (void)SetDebugText:(NSString *)debugText {
     if (([[self m_sve] StateFlags] & 0x400) == 0) return;
     [m_label setText:debugText];
@@ -359,6 +390,7 @@
     }
     [self SendCDsToBackGround];
     [self bringSubviewToFront:m_label];
+    [self bringSubviewToFront:m_ratelabel];
     [UIView beginAnimations:@"kioskblackoverlayani" context:nil];
     [UIView setAnimationRepeatCount:1.0f];
     [UIView setAnimationDuration:0.4];
@@ -1016,6 +1048,10 @@ static void RemoveClipViews(ClipObject *c) {
     [[finalDelete m_imgv] removeFromSuperview];
     if ([finalDelete m_imgvtext] != nil) [[finalDelete m_imgvtext] removeFromSuperview];
     if ([finalDelete m_swapimgv] != nil) [[finalDelete m_swapimgv] removeFromSuperview];
+    // the views died with removeFromSuperview (assign properties): do not leave dangling pointers behind
+    [finalDelete setM_imgv:nil];
+    [finalDelete setM_imgvtext:nil];
+    [finalDelete setM_swapimgv:nil];
     [finalDelete release];
 }
 
@@ -1750,6 +1786,9 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
         if ([c m_imgv] != nil && [[c m_imgv] superview] != nil) [[c m_imgv] removeFromSuperview];
         if ([c m_imgvtext] != nil && [[c m_imgvtext] superview] != nil) [[c m_imgvtext] removeFromSuperview];
         if ([c m_swapimgv] != nil && [[c m_swapimgv] superview] != nil) [[c m_swapimgv] removeFromSuperview];
+        [c setM_imgv:nil];
+        [c setM_imgvtext:nil];
+        [c setM_swapimgv:nil];
         if (m_draggingorigpos == 0) {
             m_rotateclip = NO;
             m_cliptorotate = nil;
@@ -1993,7 +2032,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
         m_draggingobj = nil;
         if (recalcXdiff) {
             double played = CACurrentMediaTime() - [self m_clipStartTime];
-            m_lastCDXDiff = [self CalcXDiff:(float)((m_clipDuration - played) / m_clipDuration)];
+            m_lastCDXDiff = (m_clipDuration > 0) ? [self CalcXDiff:(float)((m_clipDuration - played) / m_clipDuration)] : 0;
         }
         [self StartOrderAni:oldFirst];
         if (rotateFirst) {
@@ -2381,6 +2420,8 @@ static void KV_PlayStatus(NSString *text) {
 
 - (void)FadeOverProcess:(id)fadeOverProcess {
     m_fadingover = YES;
+    [fadeOverProcess release];          // the copy made by DeleteCDAni: (nil is fine); it was never released before
+    fadeOverProcess = nil;
     [self setM_presongInitTime:-1.0];
     [self setM_rotateclip:NO];
     m_cliptorotate = nil;
@@ -2395,7 +2436,6 @@ static void KV_PlayStatus(NSString *text) {
     } else {
         m_autoselected = YES;
         ClipObject *next = [m_glv getNextClipObject];
-        [fadeOverProcess release];
         if (next != nil) {
             [next retain];
             [[self m_clips] addObject:next];
@@ -2704,6 +2744,7 @@ static void KV_PlayStatus(NSString *text) {
 - (void)DeviderTimerFunc {
     double now = CACurrentMediaTime();
     double start = [self m_clipStartTime];
+    if (m_clipDuration <= 0) return;
     [self SetDeviderPlayingPercent:(float)((m_clipDuration - (now - start)) / m_clipDuration)];
     if (((now - start) - 5.0) >= m_clipDuration)
         [self setM_shrinkdevider:NO];

@@ -11,6 +11,7 @@
     BOOL m_ignoreXdiff;
     MultichannelMixerController *mMCMixer;
     UILabel *m_label;
+    UILabel *m_ratelabel;
     UIView *m_divider;
     GLView *m_glv;
     NSMutableArray *m_clips;

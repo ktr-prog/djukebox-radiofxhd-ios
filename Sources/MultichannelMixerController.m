@@ -453,6 +453,14 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
         goto fail;
 
     [self AdaptGraphToRate:fileFmt.mSampleRate forBus:bus];
+    {
+        double fileHz = fileFmt.mSampleRate, graphHz = mGraphRate, hwHz = [[AVAudioSession sharedInstance] sampleRate];
+        NSString *info = [NSString stringWithFormat:@"file %.0f Hz  |  engine %.0f Hz  |  device %.0f Hz%@", fileHz, graphHz, hwHz,
+                          (fabs(fileHz - graphHz) < 1.0 && fabs(graphHz - hwHz) < 1.0) ? @"  (no resampling)" : @"  (resampled)"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"RfxSampleRateInfo" object:nil userInfo:[NSDictionary dictionaryWithObject:info forKey:@"text"]];
+        });
+    }
     double ratio = ((mGraphRate > 0) ? mGraphRate : 44100.0) / fileFmt.mSampleRate;       // computed before the format is overridden
     AudioStreamBasicDescription client = fileFmt;
     if (mPlayMono) {

@@ -49,6 +49,12 @@
     return o == 3;
 }
 
+// Hide the status bar and the home indicator (UIStatusBarHidden in Info.plist is ignored by modern iOS when the
+// view controller decides; the home indicator did not exist in 2013).  See DEVIATIONS.md.
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeBottom; }
+
 // iOS 6+ replacement for shouldAutorotateToInterfaceOrientation: (see DEVIATIONS.md)
 - (BOOL)shouldAutorotate { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
