@@ -35,6 +35,19 @@ static void MCM_ChangeNumberChannels(AudioStreamBasicDescription *d, UInt32 nCha
     }
 }
 
+// Float32, 2 channels, non-interleaved, 44.1 kHz (what the iOS multichannel mixer accepts)
+static void MCM_FloatFormat(AudioStreamBasicDescription *d) {
+    memset(d, 0, sizeof(*d));
+    d->mFormatID = kAudioFormatLinearPCM;
+    d->mFormatFlags = kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved;
+    d->mSampleRate = 44100.0;
+    d->mChannelsPerFrame = 2;
+    d->mFramesPerPacket = 1;
+    d->mBitsPerChannel = 32;
+    d->mBytesPerFrame = 4;
+    d->mBytesPerPacket = 4;
+}
+
 // ---- Render callback (@0xbdbb4) -------------------------------------------------------------
 // refcon points at mSoundBuffer[0]; the bus number selects the entry.
 static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioActionFlags,
@@ -44,24 +57,27 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     UInt32 sample = sb->sampleNum;
     if (inNumberFrames == 0) return 0;
 
-    SInt32 *outA = (SInt32 *)ioData->mBuffers[0].mData;
-    SInt32 *outB = (SInt32 *)ioData->mBuffers[1].mData;
+    // DEVIATION: the original handed 8.24 fixed-point samples to the mixer.  Current iOS mixers only take
+    // Float32 (non-interleaved), so the samples are converted here (8.24: 1.0 == 1 << 24).
+    float *outA = (float *)ioData->mBuffers[0].mData;
+    float *outB = (float *)ioData->mBuffers[1].mData;
+    const float k = 1.0f / 16777216.0f;
     SInt32 *left  = sb->data[sb->BufNo];
     SInt32 *right = left + kMCMPlaneSamples;
 
     for (UInt32 i = 0; i < inNumberFrames; i++) {
-        SInt32 l = left[sample];
+        float l = (float)left[sample] * k;
         if (inBusNumber < 2) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? right[sample] : (sb->mMixBus ? l : 0);
+            outB[i] = sb->isStereo ? (float)right[sample] * k : (sb->mMixBus ? l : 0.0f);
         } else if (sb->mMixBus) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? right[sample] : l;
+            outB[i] = sb->isStereo ? (float)right[sample] * k : l;
         } else if (sb->isStereo) {
             outA[i] = l;
-            outB[i] = right[sample];
+            outB[i] = (float)right[sample] * k;
         } else {
-            outA[i] = 0;
+            outA[i] = 0.0f;
             outB[i] = l;
         }
         sample++;
@@ -116,7 +132,8 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
         mxafref[i] = NULL;
         mDuration[i] = 0;
     }
-    [self initializeAUGraph];
+    OSStatus gr = [self initializeAUGraph];
+    if (gr != noErr) NSLog(@"[MCM] initializeAUGraph failed: %d", (int)gr);
 }
 
 // ---- trivial accessors ---------------------------------------------------------------------
@@ -183,17 +200,11 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     for (UInt32 i = 0; i < numBuses; i++) {
         AURenderCallbackStruct cb = { renderInput, mSoundBuffer };
         if ((r = AUGraphSetNodeInputCallback(mGraph, mixerNode, i, &cb))) return r;
-        UInt32 size = sizeof(desc);
-        if ((r = AudioUnitGetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, &size))) return r;
-        MCM_ChangeNumberChannels(&desc, 2, false);
-        desc.mSampleRate = 44100.0;
+        MCM_FloatFormat(&desc);
         if ((r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc)))) return r;
     }
 
-    UInt32 size = sizeof(desc);
-    if ((r = AudioUnitGetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, &size))) return r;
-    MCM_ChangeNumberChannels(&desc, 2, false);
-    desc.mSampleRate = 44100.0;
+    MCM_FloatFormat(&desc);
     if ((r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc)))) return r;
 
     if ((r = AUGraphInitialize(mGraph))) return r;
