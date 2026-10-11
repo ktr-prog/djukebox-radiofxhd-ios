@@ -29,9 +29,20 @@
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:src]) { [self ShowStatus:@"TestMusic folder is not in the app bundle (files missing in the repo?)"]; return; }
 
-    // Only seed when there is not a single song.
+    // An earlier build used folder id 1, which the app reserves for a special folder: remove those rows.
     [DEL LockDB:NO];
     DBOperations *db = [[DBOperations alloc] init];
+    [db DeleteLegacyDemoRows];
+    [db release];
+    [DEL UnlockDB];
+    {
+        NSString *oldDir = [NSString stringWithFormat:@"%@/Documents/%@/1-Test Songs", [DEL GetHomeDir], [[server servername] uppercaseString]];
+        [fm removeItemAtPath:oldDir error:nil];
+    }
+
+    // Only seed when there is not a single song.
+    [DEL LockDB:NO];
+    db = [[DBOperations alloc] init];
     int existing = [db CountAllSongs];
     [db release];
     [DEL UnlockDB];
@@ -40,7 +51,7 @@
     int sid = [server serverid];
     FolderObject *folder = [[FolderObject alloc] init];
     [folder setFoldername:@"Test Songs"];
-    [folder setFolderid:1];
+    [folder setFolderid:100];   // 1, 3, -33, -44, -66 are reserved folder ids
     [folder setServerid:sid];
     NSString *dir = [NSString stringWithFormat:@"%@%@/", [DEL CreateServerDir:server withfolderobject:folder], [DEL Buildfoldername:folder]];
     [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -63,7 +74,7 @@
         [co setID:i + 1];
         [co setM_interpret:names[i][0]];
         [co setM_title:names[i][1]];
-        [co setM_folderid:1];
+        [co setM_folderid:100];
         [co setM_serverid:sid];
         [co setM_albumname:@""];
         [co setM_tracknumber:i + 1];
