@@ -596,5 +596,4 @@
     NSString *s = [NSString stringWithFormat:@"http://www.tobit.com/rfx-cloud1/djukeboxFacebookWall/?dId=%@&pw=%@", dev, pw];
     [m_searchview OpenFBWallUrl:[NSURLRequest requestWithURL:[NSURL URLWithString:s]]];
 }
-- (void)OpenFBWallUrl { }
 @end

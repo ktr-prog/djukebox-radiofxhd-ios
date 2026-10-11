@@ -370,7 +370,6 @@
 - (void)OpenFBWallUrl;
 - (void)OpenHintUrl;
 - (void)OpenConfigUrl;
-- (void)OpenFBWallUrl;
 - (void)ToggleAni;
 - (void)ReInitDimmView;
 - (void)MoveOneRegister:(CGSize)moveOneRegister;
