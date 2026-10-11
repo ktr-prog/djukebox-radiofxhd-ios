@@ -11,15 +11,7 @@
 
 // Shows a one-time status box so a failed seed can be diagnosed on a device without a debugger.
 + (void)ShowStatus:(NSString *)text {
-    NSLog(@"[TestLibrary] %@", text);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
-        while ([vc presentedViewController]) vc = [vc presentedViewController];
-        if (vc == nil) return;
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Demo library" message:text preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:a animated:YES completion:nil];
-    });
+    NSLog(@"[TestLibrary] %@", text);       // on-screen status window removed (log only)
 }
 
 // Copies Resources/TestMusic/* into dir.  A repo upload may rename duplicates ("name (1).mp3") and add stray

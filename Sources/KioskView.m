@@ -4,6 +4,7 @@
 // facebook, copy thread, ...) are not part of this file; see DEVIATIONS.md.
 #import "KioskView.h"
 #import "TestLibrary.h"
+#import "MusicImporter.h"
 #import "GLView.h"
 #import "KeyboardView.h"
 #import "MultichannelMixerController.h"
@@ -172,6 +173,7 @@
             m_sve = [sc GetChoosenRfxServer:nil];
         }
         // DEVIATION: demo songs for a device without music (only when the library is empty)
+        [MusicImporter ImportForServer:m_sve];      // Documents/Import -> library
         [TestLibrary SeedIfEmptyForServer:m_sve];
         m_trailerimagetime = [m_sve trailerimagetime];
 
@@ -2104,18 +2106,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
 
 // Port diagnostics: one-time on-screen status for the first play request (no debugger on a sideloaded device).
 static void KV_PlayStatus(NSString *text) {
-    static BOOL once = NO;
-    if (once) return;
-    once = YES;
-    NSLog(@"[Play] %@", text);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
-        while ([vc presentedViewController]) vc = [vc presentedViewController];
-        if (vc == nil) return;
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Play status" message:text preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:a animated:YES completion:nil];
-    });
+    NSLog(@"[Play] %@", text);       // on-screen status window removed (log only)
 }
 
 #pragma mark - now playing

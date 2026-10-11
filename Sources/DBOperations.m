@@ -958,6 +958,41 @@
     return n;
 }
 
+// port additions for the Documents/Import importer
+- (long long)MaxClipID {
+    long long n = 0;
+    if ([self dbOpen]) {
+        FMResultSet *rs = [db executeQuery:@"SELECT MAX(ID) FROM Mixxtapes"];
+        if ([rs next]) n = [rs longLongIntForColumnIndex:0];
+        [rs close];
+        [self dbClose];
+    }
+    return n;
+}
+
+- (long long)MaxFolderID {
+    long long n = 0;
+    if ([self dbOpen]) {
+        FMResultSet *rs = [db executeQuery:@"SELECT MAX(folderid) FROM MTFolders"];
+        if ([rs next]) n = [rs longLongIntForColumnIndex:0];
+        [rs close];
+        [self dbClose];
+    }
+    return n;
+}
+
+// folder id of a folder with this name on this server, or -1
+- (long long)FolderIDForName:(NSString *)name serverid:(int)serverid {
+    long long n = -1;
+    if ([self dbOpen]) {
+        FMResultSet *rs = [db executeQuery:@"SELECT folderid FROM MTFolders WHERE foldername = ? AND serverid = ? AND folderid >= 100", name, [NSNumber numberWithInt:serverid]];
+        if ([rs next]) n = [rs longLongIntForColumnIndex:0];
+        [rs close];
+        [self dbClose];
+    }
+    return n;
+}
+
 // port addition: removes the demo rows an earlier build stored under the reserved folder id 1
 - (void)DeleteLegacyDemoRows {
     if ([self dbOpen]) {

@@ -1495,15 +1495,17 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
     UIImage *mask = [UIImage imageNamed:[NSString stringWithFormat:tape ? @"tape-cut%@.png" : @"circle-white%@.png", suffix]];
     float side = size - (float)(inset * 2);
     CGRect inner = CGRectMake((float)inset, (float)inset, side, side);
-    CGContextSetFillColorWithColor(ctx, [[UIColor colorWithWhite:0.0f alpha:1.0f] CGColor]);
-    CGContextFillRect(ctx, CGRectMake(0, 0, size, size));
-    CGContextClipToMask(ctx, inner, [mask CGImage]);
+    // Port fix: CGContextClipToMask with an RGBA picture no longer uses the picture's alpha on current iOS (the disc came
+    // out as a black square).  Draw the cover and keep only the pixels that the ring/disc picture covers instead.
     if (tape) {
         CGContextSetFillColorWithColor(ctx, [[self GetColorForProg:cDPicture] CGColor]);
-        CGContextFillRect(ctx, CGRectMake(0, 0, size, size));
+        CGContextFillRect(ctx, inner);
     } else {
         CGContextDrawImage(ctx, inner, [cover CGImage]);
     }
+    CGContextSetBlendMode(ctx, kCGBlendModeDestinationIn);
+    CGContextDrawImage(ctx, inner, [mask CGImage]);
+    CGContextSetBlendMode(ctx, kCGBlendModeNormal);
     UIImage *masked = [DEL EndImageContext:ctx];
     ctx = [DEL BeginImageContext:CGSizeMake(size, size)];
     CGContextDrawImage(ctx, inner, [masked CGImage]);

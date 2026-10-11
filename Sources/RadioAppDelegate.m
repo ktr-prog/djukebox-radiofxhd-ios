@@ -739,6 +739,13 @@ int gv_kioskflag = 0;
     } else {
         [co setM_filepath:[NSString stringWithFormat:@"%@%lld-%@-%@.mp3", serverdir, [co ID], interpret, title]];
         pic = [NSString stringWithFormat:@"%@%lld-%@-%@.jpg", serverdir, [co ID], interpret, title];
+        // port addition: imported songs keep their own audio format (the original only knew .mp3)
+        if (![fm fileExistsAtPath:[co m_filepath]]) {
+            for (NSString *ext in [NSArray arrayWithObjects:@"m4a", @"wav", @"aif", @"aiff", @"caf", @"flac", @"aac", nil]) {
+                NSString *alt = [NSString stringWithFormat:@"%@%lld-%@-%@.%@", serverdir, [co ID], interpret, title, ext];
+                if ([fm fileExistsAtPath:alt]) { [co setM_filepath:alt]; break; }
+            }
+        }
     }
     [co setM_picturepath:pic];
     if (check) {

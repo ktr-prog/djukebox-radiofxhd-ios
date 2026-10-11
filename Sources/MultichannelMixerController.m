@@ -94,15 +94,7 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
 }
 
 static void MCM_Status(NSString *text) {
-    NSLog(@"[MCM] %@", text);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
-        while ([vc presentedViewController]) vc = [vc presentedViewController];
-        if (vc == nil) return;
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Audio status" message:text preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:a animated:YES completion:nil];
-    });
+    NSLog(@"[MCM] %@", text);       // on-screen status window removed (log only)
 }
 static BOOL gMCMReported = NO;   // report only the first play attempt
 
