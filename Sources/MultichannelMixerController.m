@@ -10,7 +10,7 @@ static pthread_mutex_t gBusMutex[kMCMNumBuses];
 
 // 8.24 fixed-point, non-interleaved "AudioUnit canonical" format (kAudioFormatFlagsAudioUnitCanonical).
 // Literal value used by the original because the constant is deprecated in newer SDKs.
-#define kMCMFormatFlags 0xc2c
+#define kMCMFormatFlags (kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved)  // DEVIATION: was 8.24 (0xc2c)
 
 // ---- C++ CAStreamBasicDescription helpers (0xbdb68 / 0xbf28c) as plain C --------------------
 static UInt32 MCM_SampleWordSize(const AudioStreamBasicDescription *d) {
@@ -57,25 +57,24 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     UInt32 sample = sb->sampleNum;
     if (inNumberFrames == 0) return 0;
 
-    // DEVIATION: the original handed 8.24 fixed-point samples to the mixer.  Current iOS mixers only take
-    // Float32 (non-interleaved), so the samples are converted here (8.24: 1.0 == 1 << 24).
+    // DEVIATION: the original used 8.24 fixed point end to end.  Current iOS wants Float32 (non-interleaved)
+    // for the mixer and the file reader; the SInt32 storage is simply reinterpreted as float.
     float *outA = (float *)ioData->mBuffers[0].mData;
     float *outB = (float *)ioData->mBuffers[1].mData;
-    const float k = 1.0f / 16777216.0f;
-    SInt32 *left  = sb->data[sb->BufNo];
-    SInt32 *right = left + kMCMPlaneSamples;
+    float *left  = (float *)sb->data[sb->BufNo];
+    float *right = left + kMCMPlaneSamples;
 
     for (UInt32 i = 0; i < inNumberFrames; i++) {
-        float l = (float)left[sample] * k;
+        float l = left[sample];
         if (inBusNumber < 2) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? (float)right[sample] * k : (sb->mMixBus ? l : 0.0f);
+            outB[i] = sb->isStereo ? right[sample] : (sb->mMixBus ? l : 0.0f);
         } else if (sb->mMixBus) {
             outA[i] = l;
-            outB[i] = sb->isStereo ? (float)right[sample] * k : l;
+            outB[i] = sb->isStereo ? right[sample] : l;
         } else if (sb->isStereo) {
             outA[i] = l;
-            outB[i] = (float)right[sample] * k;
+            outB[i] = right[sample];
         } else {
             outA[i] = 0.0f;
             outB[i] = l;
@@ -85,13 +84,26 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
             sb->inUse[sb->BufNo] = 0;
             sb->BufNo ^= 1;
             sample = 0;
-            left  = sb->data[sb->BufNo];
+            left  = (float *)sb->data[sb->BufNo];
             right = left + kMCMPlaneSamples;
         }
     }
     sb->sampleNum = sample;
     return 0;
 }
+
+static void MCM_Status(NSString *text) {
+    NSLog(@"[MCM] %@", text);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+        while ([vc presentedViewController]) vc = [vc presentedViewController];
+        if (vc == nil) return;
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Audio status" message:text preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [vc presentViewController:a animated:YES completion:nil];
+    });
+}
+static BOOL gMCMReported = NO;   // report only the first play attempt
 
 @implementation MultichannelMixerController
 @synthesize isPlaying;
@@ -133,7 +145,7 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
         mDuration[i] = 0;
     }
     OSStatus gr = [self initializeAUGraph];
-    if (gr != noErr) NSLog(@"[MCM] initializeAUGraph failed: %d", (int)gr);
+    if (gr != noErr) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"audio graph setup failed: %d", (int)gr]); }
 }
 
 // ---- trivial accessors ---------------------------------------------------------------------
@@ -217,7 +229,9 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     if (!mGraph) return;
     Boolean running = false;
     if (AUGraphIsRunning(mGraph, &running) == noErr && !running) {
-        if (AUGraphStart(mGraph) == noErr) isPlaying = 1;
+        OSStatus st = AUGraphStart(mGraph);
+        if (st == noErr) isPlaying = 1;
+        else if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"AUGraphStart failed: %d", (int)st]); }
     }
 }
 
@@ -365,8 +379,11 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     SInt64 fileFrames = 0;
     UInt32 size;
 
-    if (ExtAudioFileOpenURL(sourceURL[bus], &mxafref[bus]) != noErr || mxafref[bus] == NULL)
+    OSStatus stOpen = ExtAudioFileOpenURL(sourceURL[bus], &mxafref[bus]);
+    if (stOpen != noErr || mxafref[bus] == NULL) {
+        if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"open failed: %d\n%@", (int)stOpen, (NSString *)[(NSURL *)sourceURL[bus] path]]); }
         goto fail;
+    }
 
     memset(&fileFmt, 0, sizeof(fileFmt));
     size = sizeof(fileFmt);
@@ -382,8 +399,11 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
         sb->isStereo = 1;
         sb->mMixBus = 1;
     }
-    if (ExtAudioFileSetProperty(mxafref[bus], kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client) != noErr)
+    OSStatus stFmt = ExtAudioFileSetProperty(mxafref[bus], kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client);
+    if (stFmt != noErr) {
+        if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"client format rejected: %d", (int)stFmt]); }
         goto fail;
+    }
 
     size = sizeof(fileFrames);
     if (ExtAudioFileGetProperty(mxafref[bus], kExtAudioFileProperty_FileLengthFrames, &size, &fileFrames) != noErr)
@@ -430,6 +450,14 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
             pthread_mutex_unlock(&mMutexExtAudioFileRead);
             if (e != noErr) { [self ErrorPlayingFile:bus]; goto locked_break; }
             sb->inUse[0] = 1;
+            if (!gMCMReported) {
+                gMCMReported = YES;
+                float peak = 0; float *f = (float *)sb->data[0];
+                for (UInt32 q = 0; q < n; q++) if (fabsf(f[q]) > peak) peak = fabsf(f[q]);
+                Boolean run = false; if (mGraph) AUGraphIsRunning(mGraph, &run);
+                MCM_Status([NSString stringWithFormat:@"first read: %u frames, peak %.3f\ngraph: %@, running: %d\nout vol %.2f, bus vol %.2f\nfile %.0f Hz, %u ch",
+                    (unsigned)n, peak, mGraph ? @"ok" : @"NONE", (int)run, [self getOutputVolume], [self getInputVolume], fileFmt.mSampleRate, (unsigned)fileFmt.mChannelsPerFrame]);
+            }
             if (n == 0) goto locked_break;               // end of file
             total += n;
         }
