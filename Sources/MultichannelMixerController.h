@@ -45,6 +45,9 @@ typedef struct SoundBuffer {
     unsigned char isPlaying;
     int mBus;
     int m_playid[kMCMNumBuses];
+    volatile int m_gen[kMCMNumBuses];      // play generation per bus: a reader thread only touches its own generation
+    volatile int m_fadeSerial;             // newest crossfade wins when requests overlap
+    double mGraphRate;                     // sample rate of the whole graph (= hardware rate)
 }
 @property (nonatomic, readonly) unsigned char isPlaying;
 

@@ -19,6 +19,20 @@
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
 
+// Fast switching / queue dragging can touch the queue while it is changing; an out-of-range index must not
+// take the whole app down.  These behave like the NSMutableArray methods but ignore a bad index.
+@interface NSMutableArray (RfxSafeQueue)
+- (id)rfx_objectAtIndex:(NSUInteger)i;
+- (void)rfx_removeObjectAtIndex:(NSUInteger)i;
+- (void)rfx_insertObject:(id)o atIndex:(NSUInteger)i;
+@end
+@implementation NSMutableArray (RfxSafeQueue)
+- (id)rfx_objectAtIndex:(NSUInteger)i { return (i < [self count]) ? [self objectAtIndex:i] : nil; }
+- (void)rfx_removeObjectAtIndex:(NSUInteger)i { if (i < [self count]) [self removeObjectAtIndex:i]; }
+- (void)rfx_insertObject:(id)o atIndex:(NSUInteger)i { if (o == nil) return; if (i > [self count]) i = [self count]; [self insertObject:o atIndex:i]; }
+@end
+
+
 #define DEL ((RadioAppDelegate *)[[UIApplication sharedApplication] delegate])
 #define ISIPAD ([DEL m_isipad])
 #define THUMB (ISIPAD ? 0x52 : 0x38)
@@ -566,7 +580,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
 
 - (void)StartveryfirstSong {
     if ([[self m_clips] count] == 0) return;
-    ClipObject *c = [[[self m_clips] objectAtIndex:0] retain];
+    ClipObject *c = [[[self m_clips] rfx_objectAtIndex:0] retain];
     [c setM_imgv:[[UIImageView alloc] initWithFrame:CGRectZero]];
     UIImage *pic = [m_glv CreateCDPicture:c roundpic:YES];
     [[c m_imgv] setImage:pic];
@@ -588,7 +602,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
     }
     if ([[self m_clips] count] != 0) {
         if (mMCMixer == nil || ![mMCMixer isPlaying]) {
-            ClipObject *first = [[[self m_clips] objectAtIndex:0] retain];
+            ClipObject *first = [[[self m_clips] rfx_objectAtIndex:0] retain];
             [self StopPlayers];
             [self StartAudioPlayer:first withAniNext:NO witharg1:1];
             [first release];
@@ -626,7 +640,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
         return;
     }
     m_angle = 0;
-    [[self m_clips] insertObject:pick atIndex:0];
+    [[self m_clips] rfx_insertObject:pick atIndex:0];
     [pick release];
     [pick setM_imgv:[[UIImageView alloc] initWithFrame:CGRectZero]];
     UIImage *pic = [m_glv CreateCDPicture:pick roundpic:YES];
@@ -751,7 +765,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
 - (void)CheckQueueInMainThread:(NSNumber *)queueInMainThread {
     int serverid = [queueInMainThread intValue];
     for (NSInteger i = (NSInteger)[[self m_clips] count] - 1; i >= 0; i--) {
-        ClipObject *c = [[self m_clips] objectAtIndex:i];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:i];
         if ([c m_serverid] != serverid) continue;
         if (c == m_cliptorotate) {
             m_cliptorotate = nil;
@@ -765,7 +779,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
         if ([c m_imgv] != nil) { [[c m_imgv] removeFromSuperview]; [c setM_imgv:nil]; }
         if ([c m_imgvtext] != nil) { [[c m_imgvtext] removeFromSuperview]; [c setM_imgvtext:nil]; }
         if ([c m_swapimgv] != nil) { [[c m_swapimgv] removeFromSuperview]; [c setM_swapimgv:nil]; }
-        [[self m_clips] removeObjectAtIndex:i];
+        [[self m_clips] rfx_removeObjectAtIndex:i];
         [self CheckQueueHintLabel];
     }
 }
@@ -791,7 +805,7 @@ static void RemoveClipViews(ClipObject *c) {
     if (!skipDupCheck && ([clip ID] != 0 || [clip m_ipodid] != 0)) {
         // the same song may only be in the queue once
         for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
-            ClipObject *other = [[self m_clips] objectAtIndex:i];
+            ClipObject *other = [[self m_clips] rfx_objectAtIndex:i];
             if ([other ID] == [clip ID] && [clip m_serverid] == [other m_serverid] && [other m_ipodid] == [clip m_ipodid]) {
                 [other retain];
                 [m_glv setM_preventdragging:CACurrentMediaTime()];
@@ -819,7 +833,7 @@ static void RemoveClipViews(ClipObject *c) {
     }
 
     if (!replaceFirst) {
-        [[self m_clips] insertObject:clip atIndex:pos];
+        [[self m_clips] rfx_insertObject:clip atIndex:pos];
         [self AddCDPictureToView:clip];
         [self CheckQueueHintLabel];
         if ([m_glv IsShowingChannelView]) {
@@ -852,9 +866,9 @@ static void RemoveClipViews(ClipObject *c) {
     }
 
     // default mode: the new song replaces the one that is playing right now (cross fade)
-    ClipObject *oldFirst = [[[self m_clips] objectAtIndex:0] retain];
-    [[self m_clips] removeObjectAtIndex:0];
-    [[self m_clips] insertObject:clip atIndex:0];
+    ClipObject *oldFirst = [[[self m_clips] rfx_objectAtIndex:0] retain];
+    [[self m_clips] rfx_removeObjectAtIndex:0];
+    [[self m_clips] rfx_insertObject:clip atIndex:0];
     [self AddCDPictureToView:clip];
     [self CheckQueueHintLabel];
     m_fadingover = YES;
@@ -901,7 +915,7 @@ static void RemoveClipViews(ClipObject *c) {
     int mode = [orderClipPics intValue];
     m_cantransform = NO;
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
-        ClipObject *c = [[[self m_clips] objectAtIndex:i] retain];
+        ClipObject *c = [[[self m_clips] rfx_objectAtIndex:i] retain];
         [[c m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
         CGRect fr = [self GetFrameForDragPic:(int)i];
         [[c m_imgv] setFrame:fr];
@@ -923,7 +937,7 @@ static void RemoveClipViews(ClipObject *c) {
 
 - (void)MoveCDs {
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
-        ClipObject *c = [[[self m_clips] objectAtIndex:i] retain];
+        ClipObject *c = [[[self m_clips] rfx_objectAtIndex:i] retain];
         CGRect f = [self GetFrameForDragPic:(int)i];
         [[c m_imgv] setCenter:CGPointMake((float)(int)((double)f.origin.x + (double)f.size.width * 0.5),
                                           (float)(int)((double)f.origin.y + (double)f.size.height * 0.5))];
@@ -949,7 +963,7 @@ static void RemoveClipViews(ClipObject *c) {
     CGRect f = [[orderAni m_imgv] frame];
     [[orderAni m_imgv] setFrame:CGRectMake(f.origin.x - (pad ? 112.0f : 86.0f), f.origin.y, f.size.width, f.size.height)];
     if ([[self m_clips] count] != 0)
-        [[[[self m_clips] objectAtIndex:0] m_imgv] setAlpha:1.0f];
+        [[[[self m_clips] rfx_objectAtIndex:0] m_imgv] setAlpha:1.0f];
     m_cantransform = YES;
     [UIView commitAnimations];
     [self performSelector:@selector(FinalDelete:) withObject:orderAni afterDelay:1.5];
@@ -1041,7 +1055,7 @@ static void RemoveClipViews(ClipObject *c) {
     int idx = 0;
     if (queuecd != nil) {
         for (NSUInteger i = 0; i < [[self m_clips] count]; i++)
-            if (queuecd == [[self m_clips] objectAtIndex:i]) { idx = (int)i; break; }
+            if (queuecd == [[self m_clips] rfx_objectAtIndex:i]) { idx = (int)i; break; }
     }
     s_aniCounterNotAccepted++;
     [UIView beginAnimations:[NSString stringWithFormat:@"notacceptedani%i", s_aniCounterNotAccepted] context:NULL];
@@ -1053,7 +1067,7 @@ static void RemoveClipViews(ClipObject *c) {
         [[notAcceptedAni m_imgv] setFrame:CGRectMake(f.origin.x + (float)(THUMB >> 1), (f.origin.y + (float)(THUMB >> 1)) - 150.0f, 0.0f, 0.0f)];
     } else {
         [[notAcceptedAni m_imgv] setFrame:[self GetFrameForDragPic:idx]];
-        if ([[self m_clips] count] != 0 && queuecd == [[self m_clips] objectAtIndex:0])
+        if ([[self m_clips] count] != 0 && queuecd == [[self m_clips] rfx_objectAtIndex:0])
             m_resetangle = YES;
     }
     if ([notAcceptedAni m_swapimgv] != nil) {
@@ -1075,9 +1089,9 @@ static void RemoveClipViews(ClipObject *c) {
     int idx = [simpleDeleteWithOrder intValue];
     if (idx < 0 || (unsigned)idx >= [[self m_clips] count]) return;
     if (idx != 0) {
-        ClipObject *c = [[self m_clips] objectAtIndex:idx];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:idx];
         RemoveClipViews(c);
-        [[self m_clips] removeObjectAtIndex:idx];
+        [[self m_clips] rfx_removeObjectAtIndex:idx];
         [self StartOrderAni:nil];
         [self CheckQueueHintLabel];
     } else if (![self m_fadingover]) {
@@ -1125,14 +1139,14 @@ static void RemoveClipViews(ClipObject *c) {
 - (void)SendCDsToBackGround {
     if (m_waitview != nil) [self sendSubviewToBack:m_waitview];
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++)
-        [self sendSubviewToBack:[[[self m_clips] objectAtIndex:i] m_imgv]];
+        [self sendSubviewToBack:[[[self m_clips] rfx_objectAtIndex:i] m_imgv]];
 }
 
 - (void)EmptyQueue {
     while ([[self m_clips] count] != 0) {
-        ClipObject *c = [[self m_clips] objectAtIndex:0];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:0];
         RemoveClipViews(c);
-        [[self m_clips] removeObjectAtIndex:0];
+        [[self m_clips] rfx_removeObjectAtIndex:0];
     }
     [self CheckQueueHintLabel];
 }
@@ -1149,7 +1163,7 @@ static void RemoveClipViews(ClipObject *c) {
 - (ClipObject *)IsClipInList:(ClipObject *)clipInList {
     if ([self m_clips] == nil) return nil;
     for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
-        ClipObject *c = [[self m_clips] objectAtIndex:i];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:i];
         if ([c ID] == [clipInList ID] && [c m_serverid] == [clipInList m_serverid] && [c m_ipodid] == [clipInList m_ipodid])
             return c;
     }
@@ -1196,11 +1210,11 @@ static NSString *CopyStr(NSString *s) { return s == nil ? nil : [NSString string
 - (void)RemoveOnlyFirstClip {
     m_ordering = NO;
     if ([[self m_clips] count] == 0) return;
-    ClipObject *c = [[self m_clips] objectAtIndex:0];
+    ClipObject *c = [[self m_clips] rfx_objectAtIndex:0];
     if ([c m_imgv] != nil && [[c m_imgv] superview] != nil) [[c m_imgv] removeFromSuperview];
     if ([c m_imgvtext] != nil && [[c m_imgvtext] superview] != nil) [[c m_imgvtext] removeFromSuperview];
     if ([c m_swapimgv] != nil && [[c m_swapimgv] superview] != nil) [[c m_swapimgv] removeFromSuperview];
-    [[self m_clips] removeObjectAtIndex:0];
+    [[self m_clips] rfx_removeObjectAtIndex:0];
     if (mMCMixer != nil) [mMCMixer FadeOut:3.0f];
     [self setM_tenmintimer:CACurrentMediaTime()];
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 3.5, false);
@@ -1227,7 +1241,7 @@ static NSString *CopyStr(NSString *s) { return s == nil ? nil : [NSString string
 
 - (void)SetLeftTimeInMTFirstObject:(UIImage *)img {
     if ([[self m_clips] count] != 0)
-        [[[[self m_clips] objectAtIndex:0] m_imgvtext] setImage:img];
+        [[[[self m_clips] rfx_objectAtIndex:0] m_imgvtext] setImage:img];
     [img release];
 }
 
@@ -1245,7 +1259,7 @@ static NSString *CopyStr(NSString *s) { return s == nil ? nil : [NSString string
         [self performSelectorOnMainThread:@selector(SetLeftTimeInMT:) withObject:img waitUntilDone:NO];
     }
     if (m_showfirstsongInfos && [[self m_clips] count] != 0) {
-        ClipObject *c = [[self m_clips] objectAtIndex:0];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:0];
         [c retain];
         UIImage *img = [[m_glv CreateTextPicture:c withtime:[self GetSongTimeLeft:c] maxWidthPointer:NULL] retain];
         [c release];
@@ -1622,7 +1636,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
     if (idx == 0) {
         if ((flags & 0x10) != 0 || (flags & 8) != 0) {
             // not draggable: only show the remaining time above the running song
-            ClipObject *first = [[self m_clips] objectAtIndex:0];
+            ClipObject *first = [[self m_clips] rfx_objectAtIndex:0];
             CGRect fr = [self GetFrameForDragPic:0];
             if ([first m_imgvtext] == nil)
                 [first setM_imgvtext:[[UIImageView alloc] initWithFrame:CGRectZero]];
@@ -1642,11 +1656,11 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
             return;
         }
         m_draggingrunningsong = YES;
-        [[[[self m_clips] objectAtIndex:0] m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
+        [[[[self m_clips] rfx_objectAtIndex:0] m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
     }
 
     // pick the thumbnail up: a copy of it follows the finger
-    ClipObject *src = [[[self m_clips] objectAtIndex:idx] retain];
+    ClipObject *src = [[[self m_clips] rfx_objectAtIndex:idx] retain];
     m_draggingobj = [[ClipObject alloc] init];
     [self CopyPropertiesFromObject:src toObject:[self m_draggingobj]];
     if (idx >= 1 && mMCMixer != nil) [mMCMixer PlayPrePlay:m_draggingobj];
@@ -1732,7 +1746,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
     // the finger left the touch-down spot: take the original out of the queue
     if ((unsigned)m_draggingorigpos < [[self m_clips] count]) {
         if (m_draggingorigpos == 0) m_lastCDXDiff = 0;
-        ClipObject *c = [[self m_clips] objectAtIndex:m_draggingorigpos];
+        ClipObject *c = [[self m_clips] rfx_objectAtIndex:m_draggingorigpos];
         if ([c m_imgv] != nil && [[c m_imgv] superview] != nil) [[c m_imgv] removeFromSuperview];
         if ([c m_imgvtext] != nil && [[c m_imgvtext] superview] != nil) [[c m_imgvtext] removeFromSuperview];
         if ([c m_swapimgv] != nil && [[c m_swapimgv] superview] != nil) [[c m_swapimgv] removeFromSuperview];
@@ -1740,7 +1754,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
             m_rotateclip = NO;
             m_cliptorotate = nil;
         }
-        [[self m_clips] removeObjectAtIndex:m_draggingorigpos];
+        [[self m_clips] rfx_removeObjectAtIndex:m_draggingorigpos];
         m_ordering = YES;
         if (m_draggingorigpos == 0) m_lastCDXDiff = 0;
         [UIView beginAnimations:@"OrderClipsAni" context:NULL];
@@ -1803,14 +1817,14 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
                     [self setM_presongInitTime:-1.0];
                     [self setM_crossfadeInitTime:-1.0];
                     if (idx >= 2) {
-                        ClipObject *moved = [[[self m_clips] objectAtIndex:idx] retain];
+                        ClipObject *moved = [[[self m_clips] rfx_objectAtIndex:idx] retain];
                         if ([moved m_imgv] != nil) [self CorrectZindexComplete:moved];
-                        [[self m_clips] removeObjectAtIndex:idx];
-                        [[self m_clips] insertObject:moved atIndex:1];
+                        [[self m_clips] rfx_removeObjectAtIndex:idx];
+                        [[self m_clips] rfx_insertObject:moved atIndex:1];
                         [moved release];
                     }
-                    ClipObject *first = [[[self m_clips] objectAtIndex:0] retain];
-                    [[self m_clips] removeObjectAtIndex:0];
+                    ClipObject *first = [[[self m_clips] rfx_objectAtIndex:0] retain];
+                    [[self m_clips] rfx_removeObjectAtIndex:0];
                     [self performSelector:@selector(FadeOverProcess:) withObject:nil afterDelay:0.8];
                     [self StartOrderAni:first];
                     [self performSelectorOnMainThread:@selector(CheckQueueHintLabel) withObject:nil waitUntilDone:YES];
@@ -1840,7 +1854,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
     [touchesEndedDelayed release];
     if (m_showfirstsongInfos && [[self m_clips] count] != 0) {
         m_showfirstsongInfos = NO;
-        ClipObject *first = [[self m_clips] objectAtIndex:0];
+        ClipObject *first = [[self m_clips] rfx_objectAtIndex:0];
         if ([first m_imgvtext] != nil) {
             [[first m_imgvtext] removeFromSuperview];
             [first setM_imgvtext:nil];
@@ -1969,10 +1983,10 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
     if (pos >= 0) {
         ClipObject *oldFirst = nil;     // local_c
         if (m_fadingover && removeFirst) {
-            oldFirst = [[[self m_clips] objectAtIndex:0] retain];
-            [[self m_clips] removeObjectAtIndex:0];
+            oldFirst = [[[self m_clips] rfx_objectAtIndex:0] retain];
+            [[self m_clips] rfx_removeObjectAtIndex:0];
         }
-        [[self m_clips] insertObject:[self m_draggingobj] atIndex:pos];
+        [[self m_clips] rfx_insertObject:[self m_draggingobj] atIndex:pos];
         m_dragginposforremotecmds = -1;
         [self CorrectZindexComplete:m_draggingobj];
         [m_draggingobj release];        // the array holds it now
@@ -1984,7 +1998,7 @@ static NSData *ID3FindPicture(NSData *data, NSUInteger *neededTagSize) {
         [self StartOrderAni:oldFirst];
         if (rotateFirst) {
             m_angle = 0;
-            m_cliptorotate = [[self m_clips] objectAtIndex:0];
+            m_cliptorotate = [[self m_clips] rfx_objectAtIndex:0];
             m_rotateclip = YES;
         }
         [self CheckQueueHintLabel];
@@ -2064,6 +2078,83 @@ static void KV_PlayStatus(NSString *text) {
     });
 }
 
+#pragma mark - now playing
+
+// ---- Now Playing / lock screen / Control Center (port addition) ------------------------------------------
+- (void)SetupRemoteCommands {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    MPRemoteCommandCenter *rc = [MPRemoteCommandCenter sharedCommandCenter];
+    [[rc playCommand] addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
+        if ([self m_pausebegintime] >= 0) [self OtherAudio:0]; else [self ContinuePlayers];
+        [self UpdateNowPlayingRate];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [[rc pauseCommand] addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
+        if ([self m_pausebegintime] < 0) [self OtherAudio:0]; else [self PausePlayers];
+        [self UpdateNowPlayingRate];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [[rc togglePlayPauseCommand] addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
+        [self OtherAudio:0];
+        [self UpdateNowPlayingRate];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [[rc nextTrackCommand] addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
+        if ([[self m_clips] count] == 0) return MPRemoteCommandHandlerStatusNoActionableNowPlayingItem;
+        [self CheckNextSong:[NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithInt:0], @"how",
+                             [NSNumber numberWithFloat:1.0f], @"time", nil]];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [[rc previousTrackCommand] setEnabled:NO];
+    [[rc seekForwardCommand] setEnabled:NO];
+    [[rc seekBackwardCommand] setEnabled:NO];
+    [[rc changePlaybackPositionCommand] setEnabled:NO];
+}
+
+- (void)UpdateNowPlayingRate {
+    MPNowPlayingInfoCenter *c = [MPNowPlayingInfoCenter defaultCenter];
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:[c nowPlayingInfo]];
+    if ([d count] == 0) return;
+    BOOL paused = ([self m_pausebegintime] >= 0) || (mMCMixer != nil && ![mMCMixer isPlaying]);
+    [d setObject:[NSNumber numberWithDouble:paused ? 0.0 : 1.0] forKey:MPNowPlayingInfoPropertyPlaybackRate];
+    [c setNowPlayingInfo:d];
+}
+
+- (void)UpdateNowPlayingForClip:(ClipObject *)clip {
+    if (clip == nil || [clip m_folderid] == -44 || [clip m_folderid] == -66) return;
+    [self SetupRemoteCommands];
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    if ([clip m_title]) [d setObject:[clip m_title] forKey:MPMediaItemPropertyTitle];
+    if ([clip m_interpret]) [d setObject:[clip m_interpret] forKey:MPMediaItemPropertyArtist];
+    if ([clip m_albumname] && [[clip m_albumname] length]) [d setObject:[clip m_albumname] forKey:MPMediaItemPropertyAlbumTitle];
+    if ([clip m_duration] > 0) [d setObject:[NSNumber numberWithInt:[clip m_duration]] forKey:MPMediaItemPropertyPlaybackDuration];
+    [d setObject:[NSNumber numberWithDouble:0.0] forKey:MPNowPlayingInfoPropertyElapsedPlaybackTime];
+    [d setObject:[NSNumber numberWithDouble:1.0] forKey:MPNowPlayingInfoPropertyPlaybackRate];
+    UIImage *img = ([clip m_picturepath] != nil) ? [UIImage imageWithContentsOfFile:[clip m_picturepath]] : nil;
+    if (img != nil) {
+        MPMediaItemArtwork *art = [[MPMediaItemArtwork alloc] initWithBoundsSize:[img size]
+                                                                  requestHandler:^UIImage *(CGSize sz) { return img; }];
+        [d setObject:art forKey:MPMediaItemPropertyArtwork];
+        [art release];
+    }
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:d];
+    // the real length is only known once the mixer has opened the file
+    [self performSelector:@selector(RefreshNowPlayingDuration) withObject:nil afterDelay:1.0];
+}
+
+- (void)RefreshNowPlayingDuration {
+    if (mMCMixer == nil) return;
+    int dur = [mMCMixer duration];
+    if (dur <= 0) return;
+    MPNowPlayingInfoCenter *c = [MPNowPlayingInfoCenter defaultCenter];
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithDictionary:[c nowPlayingInfo]];
+    if ([d count] == 0) return;
+    [d setObject:[NSNumber numberWithInt:dur] forKey:MPMediaItemPropertyPlaybackDuration];
+    [c setNowPlayingInfo:d];
+}
+
 #pragma mark - playback
 
 - (BOOL)WillPlayJingle { return NO; }   // jingles are a server feature (GetReserved2Val) -- see DEVIATIONS.md
@@ -2098,6 +2189,7 @@ static void KV_PlayStatus(NSString *text) {
     BOOL mute = [DEL g_mute];
     float v = mute ? 0.0f : (reduce ? volume * 0.25f : volume);
     [mMCMixer setOutputVolume:v];
+    [self UpdateNowPlayingForClip:clipobject];
     [self performSelectorOnMainThread:@selector(PlayFileOnBackground:) withObject:[url path] waitUntilDone:NO];
     [mMCMixer setOutputVolume:v];
 }
@@ -2151,12 +2243,12 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (BOOL)AniToNextSong:(ClipObject *)aniToNextSong withjingle:(NSString *)jingle {
-    ClipObject *first = [[self m_clips] objectAtIndex:0];
+    ClipObject *first = [[self m_clips] rfx_objectAtIndex:0];
     if ([[self m_clips] count] >= 2) {
         [self setM_rotateclip:NO];
         m_cliptorotate = nil;
         RemoveClipViews(first);
-        [[self m_clips] removeObjectAtIndex:0];
+        [[self m_clips] rfx_removeObjectAtIndex:0];
         m_ordering = YES;
         [self setM_ignoreXdiff:YES];
         [UIView beginAnimations:@"OrderClipsAni" context:NULL];
@@ -2177,12 +2269,12 @@ static void KV_PlayStatus(NSString *text) {
     [self setM_tenmintimer:CACurrentMediaTime()];
     ClipObject *next = [m_glv getNextClipObject];
     RemoveClipViews(first);
-    [[self m_clips] removeObjectAtIndex:0];
+    [[self m_clips] rfx_removeObjectAtIndex:0];
     if (next == nil) {
         [self setM_rotateclip:NO];
         m_cliptorotate = nil;
     } else {
-        [[self m_clips] insertObject:next atIndex:0];
+        [[self m_clips] rfx_insertObject:next atIndex:0];
         [next release];
         [next setM_imgv:[[UIImageView alloc] initWithFrame:[self GetFrameForDragPic:0]]];
         [[next m_imgv] setImage:[m_glv CreateCDPicture:next roundpic:YES]];
@@ -2207,7 +2299,7 @@ static void KV_PlayStatus(NSString *text) {
 - (void)StartAudioPlayerRest {
     m_ordering = NO;
     ClipObject *clip = nil;
-    if ([[self m_clips] count] != 0) clip = [[[self m_clips] objectAtIndex:0] retain];
+    if ([[self m_clips] count] != 0) clip = [[[self m_clips] rfx_objectAtIndex:0] retain];
     [self setM_shrinkdevider:NO];
     [self setM_rotateclip:NO];
     [self setM_presongInitTime:-1.0];
@@ -2298,7 +2390,7 @@ static void KV_PlayStatus(NSString *text) {
     ClipObject *clip = nil;
     BOOL have = NO;
     if ([[self m_clips] count] != 0) {
-        clip = [[[self m_clips] objectAtIndex:0] retain];
+        clip = [[[self m_clips] rfx_objectAtIndex:0] retain];
         have = (clip != nil);
     } else {
         m_autoselected = YES;
@@ -2366,7 +2458,7 @@ static void KV_PlayStatus(NSString *text) {
     m_fadingover = YES;
     if (m_draggingrunningsong) {
         m_draggingrunningsong = NO;
-        [[self m_clips] insertObject:m_draggingobj atIndex:0];
+        [[self m_clips] rfx_insertObject:m_draggingobj atIndex:0];
         m_draggingobj = nil;
         [self CheckQueueHintLabel];
     }
@@ -2386,7 +2478,7 @@ static void KV_PlayStatus(NSString *text) {
             }
         }
     } else {
-        next = [[self m_clips] objectAtIndex:1];
+        next = [[self m_clips] rfx_objectAtIndex:1];
     }
     m_playingjingle = NO;
     if (next == nil) {
@@ -2394,7 +2486,7 @@ static void KV_PlayStatus(NSString *text) {
         m_cliptorotate = nil;
         m_rotateclip = NO;
         m_ordering = YES;
-        ClipObject *first = [[self m_clips] objectAtIndex:0];
+        ClipObject *first = [[self m_clips] rfx_objectAtIndex:0];
         if (first != nil) {
             CGRect f = [[first m_imgv] frame];
             if ([first m_imgv] != nil) [[first m_imgv] setTransform:CGAffineTransformMakeRotation(0)];
@@ -2489,7 +2581,7 @@ static void KV_PlayStatus(NSString *text) {
     if (m_fadingover) return;
     if (otherAudio == -1) {
         if ([[self m_clips] count] != 0) {
-            ClipObject *cur = [[self m_clips] objectAtIndex:0];
+            ClipObject *cur = [[self m_clips] rfx_objectAtIndex:0];
             [m_glv GetArrayLock:NO];
             int tile = 0, track = -1;
             BOOL found = NO;
@@ -2529,7 +2621,7 @@ static void KV_PlayStatus(NSString *text) {
             }
             [m_glv releaseArraylock];
             if (prev != nil) {
-                [[self m_clips] insertObject:prev atIndex:1];
+                [[self m_clips] rfx_insertObject:prev atIndex:1];
                 [prev setM_imgv:[[UIImageView alloc] initWithFrame:[self MakeSmallFrame:[self GetFrameForDragPic:1]]]];
                 [[prev m_imgv] setImage:[m_glv CreateCDPicture:prev roundpic:YES]];
                 [self AddCDPictureToView:prev];
@@ -2630,7 +2722,7 @@ static void KV_PlayStatus(NSString *text) {
     if (m_draggingrunningsong) {
         if ([[self m_clips] count] == 0)
             xd = 0;
-        else if ([[[[self m_clips] objectAtIndex:0] ID] intValue] != [[m_draggingobj ID] intValue])
+        else if ([[[[self m_clips] rfx_objectAtIndex:0] ID] intValue] != [[m_draggingobj ID] intValue])
             xd = 0;
     }
     if (m_lastCDXDiff == xd || m_ordering) return;

@@ -332,7 +332,8 @@ int gv_kioskflag = 0;
 // The original used the C AudioSession API (removed from current SDKs); AVAudioSession is its successor.
 - (void)InitAudioSession {
     AVAudioSession *session = [AVAudioSession sharedInstance];
-    [session setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    // DEVIATION: no MixWithOthers -- with it iOS never lists the app in Control Center / on the lock screen.
+    [session setCategory:AVAudioSessionCategoryPlayback error:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(audioSessionInterrupted:)
                                                  name:AVAudioSessionInterruptionNotification object:session];
     [session setActive:YES error:nil];

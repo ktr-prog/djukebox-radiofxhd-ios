@@ -2,6 +2,7 @@
 #import "MultichannelMixerController.h"
 #import "ClipObject.h"
 #import "RadioAppDelegate.h"
+#import <AVFoundation/AVFoundation.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -36,11 +37,11 @@ static void MCM_ChangeNumberChannels(AudioStreamBasicDescription *d, UInt32 nCha
 }
 
 // Float32, 2 channels, non-interleaved, 44.1 kHz (what the iOS multichannel mixer accepts)
-static void MCM_FloatFormat(AudioStreamBasicDescription *d) {
+static void MCM_FloatFormat(AudioStreamBasicDescription *d, double rate) {
     memset(d, 0, sizeof(*d));
     d->mFormatID = kAudioFormatLinearPCM;
     d->mFormatFlags = kAudioFormatFlagsNativeFloatPacked | kAudioFormatFlagIsNonInterleaved;
-    d->mSampleRate = 44100.0;
+    d->mSampleRate = rate;
     d->mChannelsPerFrame = 2;
     d->mFramesPerPacket = 1;
     d->mBitsPerChannel = 32;
@@ -170,7 +171,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 - (void)setupStereoStreamFormat:(AudioStreamBasicDescription *)d {
     d->mFormatID = kAudioFormatLinearPCM;
     d->mFormatFlags = kMCMFormatFlags;
-    d->mSampleRate = 44100.0;
+    d->mSampleRate = (mGraphRate > 0) ? mGraphRate : 44100.0;
     d->mBytesPerPacket = 4;
     d->mFramesPerPacket = 1;
     d->mBytesPerFrame = 4;
@@ -181,7 +182,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 - (void)setupMonoStreamFormat:(AudioStreamBasicDescription *)d {
     d->mFormatID = kAudioFormatLinearPCM;
     d->mFormatFlags = kMCMFormatFlags;
-    d->mSampleRate = 44100.0;
+    d->mSampleRate = (mGraphRate > 0) ? mGraphRate : 44100.0;
     d->mBytesPerPacket = 4;
     d->mFramesPerPacket = 1;
     d->mBytesPerFrame = 4;
@@ -194,6 +195,10 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     AudioStreamBasicDescription desc;
     memset(&desc, 0, sizeof(desc));
     OSStatus r;
+    // The graph runs at the hardware rate, so a file is resampled at most once (and not at all when it already
+    // has that rate); everything inside is 32-bit float.
+    mGraphRate = [[AVAudioSession sharedInstance] sampleRate];
+    if (mGraphRate < 8000.0) mGraphRate = 44100.0;
 
     AUNode outputNode, mixerNode;
     AudioComponentDescription outDesc = { kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0 };
@@ -212,11 +217,11 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     for (UInt32 i = 0; i < numBuses; i++) {
         AURenderCallbackStruct cb = { renderInput, mSoundBuffer };
         if ((r = AUGraphSetNodeInputCallback(mGraph, mixerNode, i, &cb))) return r;
-        MCM_FloatFormat(&desc);
+        MCM_FloatFormat(&desc, mGraphRate);
         if ((r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc)))) return r;
     }
 
-    MCM_FloatFormat(&desc);
+    MCM_FloatFormat(&desc, mGraphRate);
     if ((r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc)))) return r;
 
     if ((r = AUGraphInitialize(mGraph))) return r;
@@ -272,7 +277,9 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 - (void)StopPreplay { [self StopPlayingBus:2]; }
 
 - (void)StopPlayingBus:(int)bus {
+    if (bus < 0 || bus >= kMCMNumBuses) return;
     pthread_mutex_lock(&gBusMutex[bus]);
+    m_gen[bus]++;                       // any reader thread of the previous play must stop touching this bus
     if (mxafref[bus]) {
         [self enableInput:bus isOn:0.0f];
         usleep(25000);   // let the render callback leave this bus before it is wiped
@@ -327,15 +334,23 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 }
 
 - (void)PlayFile:(id)file atBus:(int)bus {
-    if (bus > 4 || file == nil) return;
+    if (bus < 0 || bus > 4 || file == nil) return;
     [self StopPlayingBus:bus];
-    sourceURL[bus] = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, (CFStringRef)file, kCFURLPOSIXPathStyle, false);
-    [self performSelectorInBackground:@selector(PlayFileInBackground:)
-                           withObject:[NSNumber numberWithInt:bus]];
+    pthread_mutex_lock(&gBusMutex[bus]);
+    int gen = ++m_gen[bus];
+    pthread_mutex_unlock(&gBusMutex[bus]);
+    // Each play gets its own job (bus, generation, URL) so a late-starting reader can never pick up a newer
+    // song's URL or file reference.
+    NSDictionary *job = [NSDictionary dictionaryWithObjectsAndKeys:
+                         [NSNumber numberWithInt:bus], @"bus",
+                         [NSNumber numberWithInt:gen], @"gen",
+                         [NSURL fileURLWithPath:file], @"url", nil];
+    [self performSelectorInBackground:@selector(PlayFileInBackground:) withObject:job];
 }
 
 - (void)PlayFile:(id)file widthCrossfadeTime:(float)t inSteps:(int)steps {
     static int sPlayIdCounter = 0;            // data_0034f6e8
+    int myFade = ++m_fadeSerial;
     int cur = [self GetCurrentBus];
     int next = [self GetNextBus];
     m_playid[next] = ++sPlayIdCounter;
@@ -349,9 +364,11 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
         [self setInputVolume:cur value:curVol];
         [self setInputVolume:next value:nextVol];
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, t / steps, false);
+        if (myFade != m_fadeSerial) return;   // a newer song request took over (it handles the buses now)
     }
     [self StopPlayingBus:cur];
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
+    if (myFade != m_fadeSerial) return;
     [self setInputVolume:cur value:1.0f];
     [self setInputVolume:next value:1.0f];
 }
@@ -362,16 +379,23 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 }
 
 // ---- reader thread -------------------------------------------------------------------------
-- (void)PlayFileInBackground:(id)busNumber {
+- (void)PlayFileInBackground:(id)job {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    int bus = [busNumber intValue];
+    int bus = [[job objectForKey:@"bus"] intValue];
+    int gen = [[job objectForKey:@"gen"] intValue];
+    NSURL *fileURL = [job objectForKey:@"url"];
     SoundBuffer *sb = &mSoundBuffer[bus];
     int playid = m_playid[bus];
 
     pthread_mutex_lock(&gBusMutex[bus]);
+    if (m_gen[bus] != gen) {                 // superseded before this thread even started
+        pthread_mutex_unlock(&gBusMutex[bus]);
+        [pool release];
+        return;
+    }
     if (mxafref[bus]) {
         ExtAudioFileDispose(mxafref[bus]);
-        while (mxafref[bus] != NULL) usleep(10000);
+        mxafref[bus] = NULL;
     }
     memset(sb, 0, sizeof(SoundBuffer));
 
@@ -380,9 +404,9 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     SInt64 fileFrames = 0;
     UInt32 size;
 
-    OSStatus stOpen = ExtAudioFileOpenURL(sourceURL[bus], &mxafref[bus]);
+    OSStatus stOpen = ExtAudioFileOpenURL((CFURLRef)fileURL, &mxafref[bus]);
     if (stOpen != noErr || mxafref[bus] == NULL) {
-        if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"open failed: %d\n%@", (int)stOpen, (NSString *)[(NSURL *)sourceURL[bus] path]]); }
+        if (!gMCMReported) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"open failed: %d\n%@", (int)stOpen, [fileURL path]]); }
         goto fail;
     }
 
@@ -391,7 +415,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     if (ExtAudioFileGetProperty(mxafref[bus], kExtAudioFileProperty_FileDataFormat, &size, &fileFmt) != noErr)
         goto fail;
 
-    double ratio = 44100.0 / fileFmt.mSampleRate;       // computed before the format is overridden
+    double ratio = ((mGraphRate > 0) ? mGraphRate : 44100.0) / fileFmt.mSampleRate;       // computed before the format is overridden
     AudioStreamBasicDescription client = fileFmt;
     if (mPlayMono) {
         [self setupMonoStreamFormat:&client];
@@ -431,13 +455,13 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 
     BOOL eof = NO;
     while (!eof) {
-        if (mxafref[bus] == NULL) break;
+        if (mxafref[bus] == NULL || m_gen[bus] != gen) break;
         UInt32 w = sb->wpos;                          // only this thread writes wpos
         UInt32 used = w - __atomic_load_n(&sb->rpos, __ATOMIC_ACQUIRE);
         if (used > kMCMRingFrames) used = kMCMRingFrames;
         if (kMCMRingFrames - used < chunk) { usleep(5000); continue; }   // ring is full enough
         if (pthread_mutex_lock(&gBusMutex[bus]) != 0) { usleep(100); continue; }
-        if (mxafref[bus] == NULL) { pthread_mutex_unlock(&gBusMutex[bus]); break; }
+        if (mxafref[bus] == NULL || m_gen[bus] != gen) { pthread_mutex_unlock(&gBusMutex[bus]); break; }
         for (UInt32 c = 0; c < channels; c++) {
             abl0->mBuffers[c].mNumberChannels = 1;
             abl0->mBuffers[c].mDataByteSize = chunk * sizeof(float);
@@ -468,30 +492,33 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 
     if (eof) {                                        // let the buffered audio play out (ring holds up to ~6 s)
         for (int k = 0; k < 900; k++) {
-            if (mxafref[bus] == NULL) break;
+            if (mxafref[bus] == NULL || m_gen[bus] != gen) break;
             if ((SInt32)(sb->wpos - sb->rpos) <= 0) break;
             usleep(10000);
         }
     }
 
-    mDuration[bus] = 0;
     free(tmp[0]);
     free(tmp[1]);
     free(abl0);
     pthread_mutex_lock(&gBusMutex[bus]);
-    if (mxafref[bus]) ExtAudioFileDispose(mxafref[bus]);
-    mxafref[bus] = NULL;
+    BOOL mine = (m_gen[bus] == gen);          // only the newest play of this bus may clean it up
+    if (mine) {
+        mDuration[bus] = 0;
+        if (mxafref[bus]) ExtAudioFileDispose(mxafref[bus]);
+        mxafref[bus] = NULL;
+    }
     pthread_mutex_unlock(&gBusMutex[bus]);
-    if (bus != 2) {
+    if (mine && bus != 2) {
         usleep(1000000);
-        if (playid == m_playid[[self GetCurrentBus]])
+        if (m_gen[bus] == gen && playid == m_playid[[self GetCurrentBus]])
             [self StopPlayingBus:bus];
     }
     [pool release];
     return;
 
 fail:
-    [self ErrorPlayingFile:bus];
+    if (m_gen[bus] == gen) [self ErrorPlayingFile:bus];
     pthread_mutex_unlock(&gBusMutex[bus]);
     [pool release];
 }

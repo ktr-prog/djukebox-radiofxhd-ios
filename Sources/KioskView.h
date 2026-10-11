@@ -201,6 +201,10 @@
 - (void)CopyPropertiesFromObject:(ClipObject *)from toObject:(ClipObject *)to;
 - (void)CheckPendingSong;
 - (void)RemoveOnlyFirstClip;
+- (void)SetupRemoteCommands;
+- (void)UpdateNowPlayingRate;
+- (void)UpdateNowPlayingForClip:(ClipObject *)clip;
+- (void)RefreshNowPlayingDuration;
 - (void)CheckQueueHintLabel;
 - (void)SetLeftTimeInMTFirstObject:(UIImage *)leftTimeInMTFirstObject;
 - (void)SetLeftTimeInMT:(UIImage *)leftTimeInMT;
