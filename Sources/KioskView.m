@@ -3051,7 +3051,7 @@ static NSArray *TutorialPages(void) {
     [cap setTag:7733];
     [cap setBackgroundColor:[UIColor clearColor]];
     [cap setTextColor:[UIColor whiteColor]];
-    [cap setFont:[UIFont boldSystemFontOfSize:22.0f]];
+    [cap setFont:[UIFont systemFontOfSize:22.0f]];
     [cap setTextAlignment:NSTextAlignmentCenter];
     [cap setNumberOfLines:2];
     [cap setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin];

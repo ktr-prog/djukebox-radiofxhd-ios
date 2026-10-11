@@ -101,6 +101,8 @@
     float m_volumepinch;  // +2098012
     BOOL m_movingup;  // +2098016
     float m_lastpinchscale;  // +2098020
+    double m_lastTouchTime;
+    BOOL m_idleReturned;
     BOOL m_idleflag;  // +2098024
     BOOL m_startsong;  // +2098025
     UIImageView *m_folderscreenshot;  // +2098028
@@ -289,6 +291,7 @@
 - (void)IdleTimerFunc;
 - (id)GetSearchText;
 - (int)GetSearchTextLen;
+- (void)CheckReturnToPlaying;
 - (void)FinishGL;
 - (void)SelectClipImmediately:(ClipObject *)clip;
 - (void)startCircleAnimation:(double)circleAnimation;

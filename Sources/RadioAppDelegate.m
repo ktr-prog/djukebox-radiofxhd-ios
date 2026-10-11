@@ -2,6 +2,7 @@
 // Methods that only served streaming / server sync / remote control / Spotify / version check
 // are not part of this port (see DEVIATIONS.md).
 #import "RadioAppDelegate.h"
+#import "MusicImporter.h"
 #import "DBOperations.h"
 #import "ServerEntry.h"
 #import "FolderObject.h"
@@ -752,7 +753,7 @@ int gv_kioskflag = 0;
         pic = [NSString stringWithFormat:@"%@%lld-%@-%@.jpg", serverdir, [co ID], interpret, title];
         // port addition: imported songs keep their own audio format (the original only knew .mp3)
         if (![fm fileExistsAtPath:[co m_filepath]]) {
-            for (NSString *ext in [NSArray arrayWithObjects:@"m4a", @"wav", @"aif", @"aiff", @"caf", @"flac", @"aac", nil]) {
+            for (NSString *ext in [MusicImporter audioExtensions]) {
                 NSString *alt = [NSString stringWithFormat:@"%@%lld-%@-%@.%@", serverdir, [co ID], interpret, title, ext];
                 if ([fm fileExistsAtPath:alt]) { [co setM_filepath:alt]; break; }
             }
@@ -1057,11 +1058,14 @@ int gv_kioskflag = 0;
     [UIView commitAnimations];
 }
 
+static CGSize gTransitionSize;   // size the window is rotating to (UIScreen.bounds can lag behind)
+- (void)SetTransitionSize:(CGSize)size { gTransitionSize = size; }
+
 - (CGSize)GetiPadSize {
-    // Port change: the app is landscape only and now fills the whole screen instead of the fixed 1024x768 / 480x320.
+    // Port change: fills the whole screen in the current orientation instead of the fixed 1024x768 / 480x320.
+    if (gTransitionSize.width > 0.0f && gTransitionSize.height > 0.0f) return gTransitionSize;
     CGRect b = [[UIScreen mainScreen] bounds];
-    float w = fmaxf(b.size.width, b.size.height), h = fminf(b.size.width, b.size.height);
-    if (w > 0.0f && h > 0.0f) return CGSizeMake(w, h);
+    if (b.size.width > 0.0f && b.size.height > 0.0f) return b.size;
     if (m_isipad) return CGSizeMake(1024.0f, 768.0f);
     return CGSizeMake(480.0f, 320.0f);
 }

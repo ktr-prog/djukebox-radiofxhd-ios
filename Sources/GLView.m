@@ -177,6 +177,9 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
     m_ishorizontal = pad.width > pad.height;
     [self SetDrawVars:pad];
     [self SetUpTippRects];
+    m_lastTouchTime = CACurrentMediaTime();
+    m_idleReturned = YES;
+    [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(CheckReturnToPlaying) userInfo:nil repeats:YES];
 
     // red-dot (new/unread marker) and "foreground" (flip-side cover) rectangles; [0] = portrait, [1] = landscape
     m_reddotrects[0] = CGRectMake(433.0f, 459.0f, 30.0f, 31.0f);
@@ -314,6 +317,11 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         float k = pad.width / 1024.0f, mid = pad.height * 0.5f;
         r1 = (int)(mid + ((float)r1 - 384.0f) * k);
         r2 = (int)(mid + ((float)r2 - 384.0f) * k);
+    }
+    if (ISIPAD && !landscape) {
+        float k = pad.width / 768.0f, mid = pad.height * 0.5f;
+        r1 = (int)(mid + ((float)r1 - 512.0f) * k);
+        r2 = (int)(mid + ((float)r2 - 512.0f) * k);
     }
     double w2 = (double)(int)(pad.width * 0.5f);
     static const double fx[7] = { 0.0, 0.12, 0.36, 0.776, 1.224, 1.64, 1.88 };
@@ -1565,6 +1573,7 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 // A horizontal drag turns the coverflow, a vertical drag that starts on a cover pulls it into the play queue,
 // a zig-zag with a pulled cover hides the song.  Taps come from the gesture recognizers.
 - (void)touchesBegan:(NSSet *)touchesBegan withEvent:(UIEvent *)event {
+    m_lastTouchTime = CACurrentMediaTime(); m_idleReturned = NO;
     m_directioncounter = 0;
     m_direction = -1;
     [self setM_moveTACInitTime:-1.0];
@@ -1621,6 +1630,7 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 }
 
 - (void)touchesMoved:(NSSet *)touchesMoved withEvent:(UIEvent *)event {
+    m_lastTouchTime = CACurrentMediaTime(); m_idleReturned = NO;
     if ([self m_fingersonscreen] > 1) return;
     if (![self touchisok]) return;
     if ([self m_autospin] || [self m_pinching]) return;
@@ -1737,6 +1747,7 @@ scroll:
 }
 
 - (void)touchesEnded:(NSSet *)touchesEnded withEvent:(UIEvent *)event {
+    m_lastTouchTime = CACurrentMediaTime(); m_idleReturned = NO;
     [self setM_fingersonscreen:0];
     if ([self m_pinching]) return;
     UITouch *t = [touchesEnded anyObject];
@@ -1748,7 +1759,7 @@ scroll:
     [self performSelector:@selector(touchesEndedDelayed:) withObject:po afterDelay:0];
 }
 
-- (void)touchesCancelled:(NSSet *)touchesCancelled withEvent:(UIEvent *)event { [self touchesCancelleddelayed]; }
+- (void)touchesCancelled:(NSSet *)touchesCancelled withEvent:(UIEvent *)event { m_lastTouchTime = CACurrentMediaTime(); m_idleReturned = NO; [self touchesCancelleddelayed]; }
 
 - (void)touchesCancelleddelayed {
     [self setM_fingersonscreen:0];
@@ -2001,6 +2012,20 @@ scroll:
     [EAGLContext setCurrentContext:context];
     glFinish();
     if (old != context) [EAGLContext setCurrentContext:old];
+}
+
+// Port addition: 10 s without touch input -> the coverflow scrolls back to the song that is playing.
+- (void)CheckReturnToPlaying {
+    if (m_idleReturned || gv_kioskflag || [DEL m_isinbackground]) return;
+    if (CACurrentMediaTime() - m_lastTouchTime < 10.0) return;
+    if ([self m_fingersonscreen] > 0 || timer != nil || [self m_autospin] || [self m_pinching] || [self m_pinchstatus] != 0) return;
+    if ([m_searchview m_keyboardshown] || [m_parent g_scaling] || [m_parent m_draggingobj] != nil) return;
+    if ([self m_selectedfolderid] == -33) return;
+    NSArray *clips = [m_parent m_clips];
+    if (clips == nil || [clips count] == 0 || ![m_parent IsPlayingClips]) return;
+    m_idleReturned = YES;
+    ClipObject *playing = [clips objectAtIndex:0];
+    [self SpinAutomaticToClip:playing orIndex:-1];
 }
 
 #pragma mark - turning animation

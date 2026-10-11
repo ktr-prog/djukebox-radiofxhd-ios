@@ -6,6 +6,7 @@
 #import "ServerEntry.h"
 #import "FolderObject.h"
 #import "ClipObject.h"
+#import "RfxOpus.h"
 
 #define DEL ((RadioAppDelegate *)[[UIApplication sharedApplication] delegate])
 
@@ -16,7 +17,8 @@
 @implementation MusicImporter
 
 + (NSSet *)audioExtensions {
-    return [NSSet setWithObjects:@"mp3", @"m4a", @"aac", @"wav", @"aif", @"aiff", @"caf", @"flac", nil];
+    return [NSSet setWithObjects:@"mp3", @"m4a", @"mp4", @"m4b", @"m4r", @"aac", @"adts", @"wav", @"wave", @"aif", @"aiff", @"aifc", @"caf", @"flac",
+            @"alac", @"mp2", @"mp1", @"ac3", @"ec3", @"amr", @"3gp", @"3g2", @"opus", @"ogg", @"oga", nil];
 }
 
 // aspect-fill square JPEG
@@ -89,6 +91,22 @@
         NSArray *parts = [rel pathComponents];
         NSString *folderName = ([parts count] > 1) ? [parts objectAtIndex:0] : @"Imported";
 
+        // ---- Ogg Opus is not readable by Core Audio: decode it to WAV first (the original file is deleted after the import)
+        NSString *origSrc = nil;
+        NSMutableDictionary *opusTags = [NSMutableDictionary dictionary];
+        NSData *opusArt = nil;
+        if ([ext isEqualToString:@"opus"] || [ext isEqualToString:@"ogg"] || [ext isEqualToString:@"oga"]) {
+            NSString *wav = [[NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"rfx-opus-%d", (int)[found indexOfObject:rel]]] stringByAppendingPathExtension:@"wav"];
+            if (![RfxOpus DecodeFile:src toWav:wav tags:opusTags art:&opusArt]) {
+                NSLog(@"[Import] %@ skipped: cannot decode (Opus support %@)", rel, [RfxOpus available] ? @"present, file is not Ogg Opus" : @"not built in");
+                [pool release];
+                continue;
+            }
+            origSrc = src;
+            src = wav;
+            ext = @"wav";
+        }
+
         // ---- tags
         NSString *title = nil, *artist = nil, *album = nil;
         NSData *art = nil;
@@ -109,6 +127,13 @@
         double secs = CMTimeGetSeconds([asset duration]);
         if (secs > 0 && secs < 1.0e6) duration = (int)(secs + 0.5);
         NSString *base = [[[rel lastPathComponent] stringByDeletingPathExtension] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (origSrc != nil) {
+            if (title == nil)  title = [opusTags objectForKey:@"title"];
+            if (artist == nil) artist = [opusTags objectForKey:@"artist"];
+            if (album == nil)  album = [opusTags objectForKey:@"album"];
+            if (art == nil)    art = opusArt;
+            if (duration == 0) duration = (int)([[opusTags objectForKey:@"duration"] doubleValue] + 0.5);
+        }
         if ([title length] == 0) {
             NSRange r = [base rangeOfString:@" - "];
             if (r.location != NSNotFound && r.location > 0) {
@@ -127,8 +152,9 @@
         UIImage *cover = (art != nil) ? [UIImage imageWithData:art] : nil;
         NSData *coverBytes = (cover != nil) ? art : nil;
         if (cover == nil) {
-            NSString *dir = [src stringByDeletingLastPathComponent];
-            NSString *stem = [src stringByDeletingPathExtension];
+            NSString *coverRef = (origSrc != nil) ? origSrc : src;
+            NSString *dir = [coverRef stringByDeletingLastPathComponent];
+            NSString *stem = [coverRef stringByDeletingPathExtension];
             for (NSString *cand in [NSArray arrayWithObjects:[stem stringByAppendingPathExtension:@"jpg"], [stem stringByAppendingPathExtension:@"png"],
                                     [dir stringByAppendingPathComponent:@"cover.jpg"], [dir stringByAppendingPathComponent:@"folder.jpg"],
                                     [dir stringByAppendingPathComponent:@"cover.png"], [dir stringByAppendingPathComponent:@"folder.png"], nil]) {
@@ -174,6 +200,7 @@
         BOOL moved = [fm moveItemAtPath:src toPath:dest error:&err];
         if (!moved) moved = [fm copyItemAtPath:src toPath:dest error:&err] && [fm removeItemAtPath:src error:nil];
         if (moved) {
+            if (origSrc != nil) [fm removeItemAtPath:origSrc error:nil];
             NSData *big = (coverBytes != nil) ? coverBytes : [self SquareJPEG:cover size:512.0f];
             NSData *small = [self SquareJPEG:cover size:40.0f];
             if (big) [big writeToFile:pic atomically:YES];

@@ -5,4 +5,5 @@
 
 @interface MusicImporter : NSObject
 + (void)ImportForServer:(ServerEntry *)server;
++ (NSSet *)audioExtensions;
 @end
