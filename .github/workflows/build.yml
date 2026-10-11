@@ -18,6 +18,16 @@ jobs:
             -configuration Release -sdk iphoneos -derivedDataPath build \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             2>&1 | tee build.log | tail -n 200
+      - name: Lower minimum iOS to 9.0 (Xcode 26 cannot target below 12)
+        run: |
+          APP=build/Build/Products/Release-iphoneos/Radiofx_iPad.app
+          BIN="$APP/Radiofx_iPad"
+          vtool -show-build "$BIN" || true
+          vtool -set-version-min ios 9.0 12.0 -replace -output "$BIN.new" "$BIN" || \
+            vtool -set-build-version ios 9.0 12.0 -replace -output "$BIN.new" "$BIN"
+          mv "$BIN.new" "$BIN"
+          /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 9.0" "$APP/Info.plist"
+          vtool -show-build "$BIN" || true
       - name: Package IPA
         run: |
           mkdir -p Payload
