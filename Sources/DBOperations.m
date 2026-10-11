@@ -945,4 +945,16 @@
     }
     return ids;
 }
+
+// port addition: number of songs in the whole library (any server)
+- (int)CountAllSongs {
+    int n = 0;
+    if ([self dbOpen]) {
+        FMResultSet *rs = [db executeQuery:@"SELECT COUNT(*) FROM Mixxtapes"];
+        if ([rs next]) n = [rs intForColumnIndex:0];
+        [rs close];
+        [self dbClose];
+    }
+    return n;
+}
 @end

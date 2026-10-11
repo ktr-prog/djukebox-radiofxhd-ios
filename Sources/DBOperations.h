@@ -76,5 +76,6 @@
 // radio channel table (only the count is needed by GetFolders)
 - (int)GetNumChoosenChannels;
 - (ClipObject *)GetClipObjectForTrackURI:(NSString *)trackuri withfolderuri:(NSString *)folderuri;
+- (int)CountAllSongs;               // port addition
 - (NSArray *)GetLibraryServerIDs;   // port addition: serverids used by the folders of the local library
 @end
