@@ -257,6 +257,7 @@
         [NSThread detachNewThreadSelector:@selector(TimerThread) toTarget:self withObject:nil];
         {
             CADisplayLink *rl = [CADisplayLink displayLinkWithTarget:self selector:@selector(RotationFrame)];
+            [rl setPreferredFramesPerSecond:20];
             [rl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
         }
         if (m_sve != nil)
@@ -349,7 +350,9 @@
     y += 70.0f;
     NSArray *rows = [NSArray arrayWithObjects:
         [NSArray arrayWithObjects:@"Schwarzer Rahmen um die Cover", @"RfxDevCoverBorder", [NSNumber numberWithInt:1], nil],
-        [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil], nil];
+        [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil],
+        [NSArray arrayWithObjects:@"Lautstärke-Button deaktivieren", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
+        [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil], nil];
     for (NSArray *r in rows) {
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
         [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
@@ -362,7 +365,21 @@
         [sw setTag:7750 + [[r objectAtIndex:2] intValue]];
         [sw addTarget:self action:@selector(DevSwitchChanged:) forControlEvents:UIControlEventValueChanged];
         [ov addSubview:sw]; [sw release];
-        y += 56.0f;
+        y += 52.0f;
+    }
+    {
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, 230.0f, 31.0f)];
+        [l setText:@"Rahmenbreite"]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
+        [l setFont:[UIFont systemFontOfSize:19.0f]];
+        [ov addSubview:l]; [l release];
+        UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f + 240.0f, y, rowW - 240.0f, 31.0f)];
+        [sl setMinimumValue:0.0f]; [sl setMaximumValue:8.0f];
+        id wp = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCoverBorderWidth"];
+        [sl setValue:(wp == nil ? 2.0f : [wp floatValue])];
+        [sl setTag:7760];
+        [sl addTarget:self action:@selector(DevSliderDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+        [ov addSubview:sl]; [sl release];
+        y += 52.0f;
     }
     UILabel *info = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y + 10.0f, rowW, 40.0f)];
     [info setTag:7746];
@@ -384,16 +401,32 @@
 
 - (void)DevSwitchChanged:(UISwitch *)sw {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    if ([sw tag] == 7751) {
-        [d setBool:[sw isOn] forKey:@"RfxDevCoverBorder"];
-        [d synchronize];
+    switch ([sw tag]) {
+    case 7751:
+        [d setBool:[sw isOn] forKey:@"RfxDevCoverBorder"]; [d synchronize];
         [m_glv RefreshCoverTextures];
-    } else if ([sw tag] == 7752) {
-        [d setBool:[sw isOn] forKey:@"RfxDevRateLabel"];
-        [d synchronize];
+        break;
+    case 7752:
+        [d setBool:[sw isOn] forKey:@"RfxDevRateLabel"]; [d synchronize];
         [m_ratelabel setHidden:![sw isOn]];
         if ([sw isOn]) [self bringSubviewToFront:m_ratelabel];
+        break;
+    case 7753:
+        [d setBool:[sw isOn] forKey:@"RfxDevNoVolume"]; [d synchronize];
+        [m_glv ExecuteServerFlags:[NSNumber numberWithInt:1]];
+        break;
+    case 7754:
+        [d setBool:[sw isOn] forKey:@"RfxDevAllButtons"]; [d synchronize];
+        [m_glv ExecuteServerFlags:[NSNumber numberWithInt:1]];
+        break;
     }
+    [self bringSubviewToFront:[self viewWithTag:7741]];
+}
+
+- (void)DevSliderDone:(UISlider *)sl {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setFloat:[sl value] forKey:@"RfxDevCoverBorderWidth"]; [d synchronize];
+    [m_glv RefreshCoverTextures];
 }
 
 - (void)CloseDevMenu {
@@ -1062,7 +1095,7 @@ static void RemoveClipViews(ClipObject *c) {
         ClipObject *c = [[[self m_clips] rfx_objectAtIndex:i] retain];
         CGRect fr = [self GetFrameForDragPic:(int)i];
         // a spinning CD keeps its rotation (resetting it inside the animation block made the spin snap back and stutter)
-        BOOL spin = (mode == 1 && c == m_cliptorotate && [self m_rotateclip]);
+        BOOL spin = NO;   // rotation is a layer animation now; the model transform stays identity
         if (spin) {
             [[c m_imgv] setBounds:CGRectMake(0, 0, fr.size.width, fr.size.height)];
             [[c m_imgv] setCenter:CGPointMake(CGRectGetMidX(fr), CGRectGetMidY(fr))];
@@ -2350,6 +2383,8 @@ static void KV_PlayStatus(NSString *text) {
     }
     [self setM_crossfadeInitTime:-1.0];
     m_didfade = NO;
+    m_spinHold = CACurrentMediaTime() + 6.0;      // the CD spins from the moment the song is started
+    [self RotationFrame];
     if (audioPlayer != nil && [audioPlayer m_folderid] != -44 && !m_autoselected) {
         DBOperations *dbop = [[DBOperations alloc] init];
         [DEL LockDB:YES];
@@ -2917,28 +2952,35 @@ static void KV_PlayStatus(NSString *text) {
     [self SetDeviderPlayingPercent:0.0f];
 }
 
+// The spinning CD is a Core Animation rotation on the layer (runs on the render server, so it stays smooth even when the
+// main thread is busy and it starts the moment it is added).  This supervisor (a few times per second) makes sure that
+// exactly the first clip of the queue spins while a song is playing.
 - (void)RotationFrame {
-    if (![self m_rotateclip] || [(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] m_isinbackground]) { m_lastRotTime = 0; return; }
-    [self RotationTimerFunction];
+    ClipObject *first = ([[self m_clips] count] > 0) ? [[self m_clips] rfx_objectAtIndex:0] : nil;
+    BOOL playing = (mMCMixer != nil && [mMCMixer isPlaying]) || CACurrentMediaTime() < m_spinHold;
+    UIImageView *want = (first != nil && playing) ? [first m_imgv] : nil;
+    if (want != nil && [want superview] == nil) want = nil;
+    if (want != m_spinView) {
+        if (m_spinView != nil) {
+            [[m_spinView layer] removeAnimationForKey:@"rfxspin"];
+            [m_spinView release];
+            m_spinView = nil;
+        }
+        if (want != nil) m_spinView = [want retain];
+    }
+    if (m_spinView != nil && [[m_spinView layer] animationForKey:@"rfxspin"] == nil) {
+        CABasicAnimation *a = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+        [a setFromValue:[NSNumber numberWithFloat:0.0f]];
+        [a setToValue:[NSNumber numberWithFloat:(float)(2.0 * M_PI)]];
+        [a setDuration:9.0];                       // 40 degrees per second, as before
+        [a setRepeatCount:HUGE_VALF];
+        [a setRemovedOnCompletion:NO];
+        [a setTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear]];
+        [[m_spinView layer] addAnimation:a forKey:@"rfxspin"];
+    }
 }
 
-- (void)RotationTimerFunction {
-    if (!m_cantransform || m_cliptorotate == nil || m_blackview != nil) return;
-    // m_cliptorotate is not retained: make sure the clip still exists before touching it (pointer compare only)
-    if ([[self m_clips] indexOfObjectIdenticalTo:m_cliptorotate] == NSNotFound && m_cliptorotate != m_draggingobj) {
-        m_cliptorotate = nil;
-        m_rotateclip = NO;
-        return;
-    }
-    // driven by a CADisplayLink: 40 degrees per second, independent of the frame timing (was 2 degrees per 50 ms tick)
-    double now = CACurrentMediaTime();
-    double dt = (m_lastRotTime > 0) ? (now - m_lastRotTime) : 0.0;
-    m_lastRotTime = now;
-    if (dt > 0.1) dt = 0.1;
-    m_angle += 40.0 * dt;
-    if (m_angle > 360.0) m_angle -= 360.0;
-    [[m_cliptorotate m_imgv] setTransform:CGAffineTransformMakeRotation((float)((m_angle / 180.0) * M_PI))];
-}
+- (void)RotationTimerFunction { [self RotationFrame]; }
 
 - (void)LogoAni:(NSNumber *)logoAni {
     if ([(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] m_isstattalm]) return;

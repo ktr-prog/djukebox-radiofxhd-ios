@@ -922,21 +922,19 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         CGContextFillRect(ctx, CGRectMake(7.0f, 1.0f, gv_texsize - 14, gv_texsize - 14));
         [self AddRedDot:(int)[clipArray count] withContext:ctx];
     } else if (clipObject == nil && nakedImage != nil) {
-        // Dev-menu option "RfxDevCoverBorder" (default on = original look): black ground + gray frame around the cover.
-        // Off: the cover fills the whole tile.
-        id borderPref = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCoverBorder"];
+        // Dev-menu options "RfxDevCoverBorder" (on/off) and "RfxDevCoverBorderWidth" (in units of a 196 px texture, default 2):
+        // a thin black frame around the cover; the cover itself fills everything inside the frame.
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        id borderPref = [ud objectForKey:@"RfxDevCoverBorder"];
         BOOL withBorder = (borderPref == nil) ? YES : [borderPref boolValue];
-        if (withBorder && !borderalreadypresent) {
+        id widthPref = [ud objectForKey:@"RfxDevCoverBorderWidth"];
+        float units = (widthPref == nil) ? 2.0f : [widthPref floatValue];
+        float bw = (withBorder && !borderalreadypresent) ? units * (w / 196.0f) : 0.0f;
+        if (bw > 0.0f) {
             CGContextSetFillColorWithColor(ctx, [[UIColor colorWithWhite:0.0f alpha:1.0f] CGColor]);
             CGContextFillRect(ctx, CGRectMake(0, 0, w, w));
-            // the original frame was 6-7 px of a 196 px texture; keep the same proportions at any texture size
-            float s = w / 196.0f;
-            CGContextSetFillColorWithColor(ctx, [gray CGColor]);
-            CGContextFillRect(ctx, CGRectMake(6.0f * s, 0, w - 12.0f * s, w - 12.0f * s));
-            CGContextDrawImage(ctx, CGRectMake(7.0f * s, 1.0f * s, w - 14.0f * s, w - 14.0f * s), [nakedImage CGImage]);
-        } else {
-            CGContextDrawImage(ctx, CGRectMake(0, 0, w, w), [nakedImage CGImage]);
         }
+        CGContextDrawImage(ctx, CGRectMake(bw, bw, w - 2.0f * bw, w - 2.0f * bw), [nakedImage CGImage]);
         [self AddRedDot:number withContext:ctx];
     } else {
         // no cover picture (or a card kind that only existed with the server): the "cover-note" placeholder with a 1px frame
@@ -2202,28 +2200,19 @@ scroll:
     }
     n = (int)[[self m_tilearray] count];
     float fdist = (float)dist;
-    float accelLen = (float)MIN((double)fdist * 0.1, 3.0);     // covers for speeding up
-    float decelLen = (float)MIN((double)fdist * 0.3, 5.0);     // covers for slowing down
-    float cruiseEnd = fdist - decelLen;
     float startOffset = (float)offset;
-    float pos = 0, v = 0;
-    while (pos < fdist) {
-        if (pos < accelLen) {
-            v = (float)((double)v + 0.2);
-            pos = v * v * accelLen;
-        } else if (pos < cruiseEnd) {
-            pos = (float)((double)pos + 0.6);
-            v = 1.0f;
-            if (pos > cruiseEnd) pos = cruiseEnd;
-        } else {
-            v = (float)((double)v + -0.15);
-            if (v <= 0) break;
-            pos = fdist - v * v * decelLen;
-        }
-        double o = (double)(startOffset + dir * pos);
+    // Port change: time based, slow ease-in/ease-out (the original ran at a fixed step per frame and peaked at ~36 covers/s).
+    double dur = 1.3 + 0.3 * sqrt((double)fdist) * 2.0;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
+    double t0 = CACurrentMediaTime();
+    for (;;) {
+        double t = (CACurrentMediaTime() - t0) / dur;
+        if (t >= 1.0 || [DEL g_end] || gv_kioskflag) break;
+        double e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);     // smootherstep
+        double o = (double)(startOffset + dir * (float)(e * (double)fdist));
         if ((int)o >= n) o -= (double)n; else if (o < 0) o += (double)n;
         offset = o;
         [self drawView];
+        [NSThread sleepForTimeInterval:0.002];
     }
     double o = (double)(startOffset + dir * fdist);
     if ((int)o >= n) o -= (double)n; else if (o < 0) o += (double)n;

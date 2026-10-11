@@ -238,12 +238,20 @@
         [m_registers[i] setM_enabled:NO];
         // port: only volume (0), search (2), collections (4) and help (5) exist offline.  The speech bubble (1), the
         // on/off button (3) and the settings / video / euro / pin-board buttons (6-9) belong to the dead backend.
+        // dev menu: "RfxDevAllButtons" enables every button, "RfxDevNoVolume" turns the volume button off (the original
+        // server flag 0x100, "volume button disabled": the button is simply not there)
+        NSUserDefaults *devud = [NSUserDefaults standardUserDefaults];
+        BOOL devAll = [devud boolForKey:@"RfxDevAllButtons"], devNoVol = [devud boolForKey:@"RfxDevNoVolume"];
+        if (devAll && !([self m_pinchstatus] == 2 && i != 2)) {
+            if (!(i == 0 && devNoVol)) [m_registers[i] setM_enabled:YES];
+            continue;
+        }
         if (i == 1 || i == 3 || i >= 6) continue;
         if ([self m_pinchstatus] == 2 && i != 2) continue;
         BOOL online = [DEL IsOnline];
         switch (i) {
             case 0:
-                if (sve != nil && (FLAGBYTE(1) & 0x01) == 0) [m_registers[i] setM_enabled:YES];
+                if (sve != nil && (FLAGBYTE(1) & 0x01) == 0 && !devNoVol) [m_registers[i] setM_enabled:YES];
                 break;
             case 1:
                 if (sve != nil && (FLAGBYTE(3) & 0x04) != 0) [m_registers[i] setM_enabled:YES];

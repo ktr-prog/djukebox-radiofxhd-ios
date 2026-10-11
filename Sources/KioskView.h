@@ -21,6 +21,8 @@
     int border;
     double m_angle;
     double m_lastRotTime;
+    UIImageView *m_spinView;
+    double m_spinHold;
     BOOL m_restEarly;
     NSString *m_lastrateinfo;
     double m_clipStartTime;
@@ -304,6 +306,7 @@
 - (void)ShowDevMenu;
 - (void)CloseDevMenu;
 - (void)DevSwitchChanged:(UISwitch *)sw;
+- (void)DevSliderDone:(UISlider *)sl;
 - (void)ShowTutorial;
 - (void)ShowTutorialPage;
 - (void)TutorialTap:(UITapGestureRecognizer *)g;
