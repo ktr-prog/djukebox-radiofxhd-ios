@@ -2082,7 +2082,13 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)StartOnePlayer:(int)onePlayer withVolume:(float)volume withurl:(NSURL *)url withclipobject:(ClipObject *)clipobject {
-    if (url == nil) { KV_PlayStatus([NSString stringWithFormat:@"no file for this clip (id %lld, folder %lld)\nfilepath: %@", [clipobject ID], [clipobject m_folderid], [clipobject m_filepath]]); return; }
+    if (url == nil) {
+        NSString *pp = [clipobject m_picturepath];
+        NSString *dirp = [pp stringByDeletingLastPathComponent];
+        NSArray *list = (dirp != nil) ? [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dirp error:nil] : nil;
+        KV_PlayStatus([NSString stringWithFormat:@"no file for this clip (id %lld, folder %lld)\nfilepath: %@\npicture: %@\ntitle: %@ / %@\nfiles in folder: %@", [clipobject ID], [clipobject m_folderid], [clipobject m_filepath], pp, [clipobject m_interpret], [clipobject m_title], [list componentsJoinedByString:@" | "]]);
+        return;
+    }
     if ([clipobject m_folderid] == -66 || [clipobject m_folderid] == -44) { KV_PlayStatus(@"clip is a special folder, skipped"); return; }
     KV_PlayStatus([NSString stringWithFormat:@"play requested\n%@\nexists: %d\nout volume %.2f, mute %d", [url path], (int)[[NSFileManager defaultManager] fileExistsAtPath:[url path]], volume, (int)[DEL g_mute]]);
     if (mMCMixer == nil) mMCMixer = [[MultichannelMixerController alloc] init];
