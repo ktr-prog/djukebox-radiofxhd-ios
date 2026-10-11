@@ -330,37 +330,21 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         m_tipprects[i] = CGRectMake((float)(w2 * fx[i]), (float)r1, (float)(w2 * fw[i]), (float)(r2 - r1));
 }
 
-// y of the upper edge of the covers (same numbers as the tap rectangles in SetUpTippRects).
-- (float)GetCoverTopY:(CGSize)pad {
-    BOOL landscape = pad.width > pad.height;
-    int r1 = landscape ? 0xe1 : 0x19f;
-    if (!ISIPAD) {
-        if (0.5f >= [[UIScreen mainScreen] scale]) r1 -= 0xa5; else r1 -= 0xe6;
-    }
-    if (ISIPAD && landscape) {
-        float k = pad.width / 1024.0f, mid = pad.height * 0.5f;
-        r1 = (int)(mid + ((float)r1 - 384.0f) * k);
-    }
-    return (float)r1;
-}
-
-// Port change: the title/artist block is centred vertically between the bottom of the button row and the top of the covers.
+// Original positions (1024x768 design). On other screen sizes the block is scaled about the vertical screen centre
+// by the same factor as the covers (width / 1024), so spacing and heights stay in the original proportions.
 - (CGRect)GetTitleInterpretLabelFrame:(CGSize)frame withtype:(int)type {
+    int y;
     BOOL ipad = ISIPAD;
-    float w = ipad ? 580.0f : 245.0f;
-    float th = 30.0f, ah = 20.0f, ay = ipad ? 30.0f : 25.0f;     // title height, artist height, artist offset
-    float btnBottom = ipad ? 48.0f : 32.0f;
-    float coverTop = [self GetCoverTopY:frame];
-    float blockH = ay + ah;
-    float y0 = btnBottom + ((coverTop - btnBottom) - blockH) * 0.5f;
-    if (frame.width <= frame.height || y0 < btnBottom) {
-        // portrait (not used any more) / no room: original positions
-        int base = (frame.width > frame.height) ? 0x8c : 0x103;
-        if (!ipad) base -= 0x69;
-        y0 = (float)base;
+    int base = (frame.width > frame.height) ? 0x8c : 0x103;
+    if (!ipad) base -= 0x69;
+    if (type == 1) y = base + (ipad ? 0x1e : 0x19); else y = base;
+    float fy = (float)y;
+    if (ipad && frame.width > frame.height) {
+        float k = frame.width / 1024.0f, mid = frame.height * 0.5f;
+        fy = mid + (fy - 384.0f) * k;
     }
-    float y = (type == 1) ? y0 + ay : y0;
-    return CGRectMake((frame.width - w) * 0.5f, y, w, type != 1 ? th : ah);
+    float w = ipad ? 580.0f : 245.0f;
+    return CGRectMake((frame.width - w) * 0.5f, fy, w, type != 1 ? 30.0f : 20.0f);
 }
 
 - (void)layoutSubviews {
@@ -938,9 +922,21 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         CGContextFillRect(ctx, CGRectMake(7.0f, 1.0f, gv_texsize - 14, gv_texsize - 14));
         [self AddRedDot:(int)[clipArray count] withContext:ctx];
     } else if (clipObject == nil && nakedImage != nil) {
-        // Port change: the cover fills the whole tile (the original drew a black ground and a gray frame around it,
-        // which showed as a thin black square border).
-        CGContextDrawImage(ctx, CGRectMake(0, 0, w, w), [nakedImage CGImage]);
+        // Dev-menu option "RfxDevCoverBorder" (default on = original look): black ground + gray frame around the cover.
+        // Off: the cover fills the whole tile.
+        id borderPref = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCoverBorder"];
+        BOOL withBorder = (borderPref == nil) ? YES : [borderPref boolValue];
+        if (withBorder && !borderalreadypresent) {
+            CGContextSetFillColorWithColor(ctx, [[UIColor colorWithWhite:0.0f alpha:1.0f] CGColor]);
+            CGContextFillRect(ctx, CGRectMake(0, 0, w, w));
+            // the original frame was 6-7 px of a 196 px texture; keep the same proportions at any texture size
+            float s = w / 196.0f;
+            CGContextSetFillColorWithColor(ctx, [gray CGColor]);
+            CGContextFillRect(ctx, CGRectMake(6.0f * s, 0, w - 12.0f * s, w - 12.0f * s));
+            CGContextDrawImage(ctx, CGRectMake(7.0f * s, 1.0f * s, w - 14.0f * s, w - 14.0f * s), [nakedImage CGImage]);
+        } else {
+            CGContextDrawImage(ctx, CGRectMake(0, 0, w, w), [nakedImage CGImage]);
+        }
         [self AddRedDot:number withContext:ctx];
     } else {
         // no cover picture (or a card kind that only existed with the server): the "cover-note" placeholder with a 1px frame
@@ -2069,6 +2065,14 @@ scroll:
     m_idleReturned = YES;
     ClipObject *playing = [clips objectAtIndex:0];
     [self SpinAutomaticToClip:playing orIndex:-1];
+}
+
+// Dev menu: re-render all cover textures (e.g. after the border option changed).
+- (void)RefreshCoverTextures {
+    [self EmptyAllTextures];
+    [self CreatePlaceholderTextures];
+    [self ReInitThread];
+    [self drawView];
 }
 
 #pragma mark - turning animation

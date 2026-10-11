@@ -21,6 +21,8 @@
     int border;
     double m_angle;
     double m_lastRotTime;
+    BOOL m_restEarly;
+    NSString *m_lastrateinfo;
     double m_clipStartTime;
     double m_clipDuration;
     ClipObject *m_draggingobj;
@@ -299,6 +301,9 @@
 - (UIImage *)GetSongPictureFor:(NSString *)title withinterpret:(NSString *)interpret;
 - (void)StartHelpPictureAni;
 - (void)FlushGLForBackground;
+- (void)ShowDevMenu;
+- (void)CloseDevMenu;
+- (void)DevSwitchChanged:(UISwitch *)sw;
 - (void)ShowTutorial;
 - (void)ShowTutorialPage;
 - (void)TutorialTap:(UITapGestureRecognizer *)g;

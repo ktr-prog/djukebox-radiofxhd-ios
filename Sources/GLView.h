@@ -292,6 +292,7 @@
 - (id)GetSearchText;
 - (int)GetSearchTextLen;
 - (void)CheckReturnToPlaying;
+- (void)RefreshCoverTextures;
 - (void)RemoveQueuedFrom:(NSMutableArray *)cand;
 - (void)MarkClipPlayed:(ClipObject *)clip;
 - (void)FinishGL;

@@ -199,8 +199,20 @@
         [m_ratelabel setFont:[UIFont fontWithName:@"Courier" size:12.0f]];
         [m_ratelabel setText:@"sample rate: -"];
         [m_ratelabel setUserInteractionEnabled:NO];
+        [m_ratelabel setHidden:![[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevRateLabel"]];
         [self addSubview:m_ratelabel];
         [m_ratelabel release];
+        {
+            // hidden dev menu: five quick taps in the top left corner
+            UITapGestureRecognizer *dev = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(ShowDevMenu)];
+            [dev setNumberOfTapsRequired:5];
+            [dev setCancelsTouchesInView:NO];
+            [dev setDelaysTouchesBegan:NO];
+            [dev setDelaysTouchesEnded:NO];
+            [dev setDelegate:(id)self];
+            [self addGestureRecognizer:dev];
+            [dev release];
+        }
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(RateInfo:) name:@"RfxSampleRateInfo" object:nil];
 
         m_blackborderview = [[UIView alloc] initWithFrame:[self GetBlackBorderViewRect]];
@@ -305,8 +317,87 @@
 }
 
 - (void)RateInfo:(NSNotification *)n {
-    [m_ratelabel setText:[[n userInfo] objectForKey:@"text"]];
-    [self bringSubviewToFront:m_ratelabel];
+    NSString *t = [[n userInfo] objectForKey:@"text"];
+    [m_ratelabel setText:t];
+    if (![m_ratelabel isHidden]) [self bringSubviewToFront:m_ratelabel];
+    UILabel *dl = (UILabel *)[[self viewWithTag:7741] viewWithTag:7746];
+    if (dl != nil) [dl setText:t];
+    [m_lastrateinfo release];
+    m_lastrateinfo = [t copy];
+}
+
+#pragma mark - hidden dev menu (5 taps in the top left corner)
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    if (![g isKindOfClass:[UITapGestureRecognizer class]] || [(UITapGestureRecognizer *)g numberOfTapsRequired] != 5) return YES;
+    CGPoint p = [touch locationInView:self];
+    return p.x < 110.0f && p.y < 110.0f && [self viewWithTag:7741] == nil;
+}
+
+- (void)ShowDevMenu {
+    if ([self viewWithTag:7741] != nil) return;
+    CGRect b = [self bounds];
+    UIView *ov = [[UIView alloc] initWithFrame:b];
+    [ov setTag:7741];
+    [ov setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.94f]];
+    [ov setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    float cx = b.size.width * 0.5f, y = 70.0f, rowW = 560.0f;
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW, 34.0f)];
+    [title setText:@"Dev-Menü"]; [title setTextColor:[UIColor whiteColor]]; [title setBackgroundColor:[UIColor clearColor]];
+    [title setFont:[UIFont systemFontOfSize:26.0f]]; [title setTextAlignment:NSTextAlignmentCenter];
+    [ov addSubview:title]; [title release];
+    y += 70.0f;
+    NSArray *rows = [NSArray arrayWithObjects:
+        [NSArray arrayWithObjects:@"Schwarzer Rahmen um die Cover", @"RfxDevCoverBorder", [NSNumber numberWithInt:1], nil],
+        [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil], nil];
+    for (NSArray *r in rows) {
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
+        [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
+        [l setFont:[UIFont systemFontOfSize:19.0f]];
+        [ov addSubview:l]; [l release];
+        UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(cx + rowW * 0.5f - 51.0f, y, 51.0f, 31.0f)];
+        id pref = [[NSUserDefaults standardUserDefaults] objectForKey:[r objectAtIndex:1]];
+        BOOL on = (pref == nil) ? ([[r objectAtIndex:2] intValue] == 1) : [pref boolValue];
+        [sw setOn:on];
+        [sw setTag:7750 + [[r objectAtIndex:2] intValue]];
+        [sw addTarget:self action:@selector(DevSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+        [ov addSubview:sw]; [sw release];
+        y += 56.0f;
+    }
+    UILabel *info = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y + 10.0f, rowW, 40.0f)];
+    [info setTag:7746];
+    [info setText:(m_lastrateinfo != nil ? m_lastrateinfo : @"Sample-Rate: -")];
+    [info setTextColor:[UIColor colorWithWhite:0.8f alpha:1.0f]]; [info setBackgroundColor:[UIColor clearColor]];
+    [info setFont:[UIFont fontWithName:@"Courier" size:14.0f]]; [info setNumberOfLines:2];
+    [ov addSubview:info]; [info release];
+    UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
+    [x setFrame:CGRectMake(b.size.width - 70.0f, 20.0f, 50.0f, 50.0f)];
+    [x setTitle:@"\u2715" forState:UIControlStateNormal];
+    [x setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [[x titleLabel] setFont:[UIFont systemFontOfSize:26.0f]];
+    [x setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin];
+    [x addTarget:self action:@selector(CloseDevMenu) forControlEvents:UIControlEventTouchUpInside];
+    [ov addSubview:x];
+    [self addSubview:ov];
+    [ov release];
+}
+
+- (void)DevSwitchChanged:(UISwitch *)sw {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if ([sw tag] == 7751) {
+        [d setBool:[sw isOn] forKey:@"RfxDevCoverBorder"];
+        [d synchronize];
+        [m_glv RefreshCoverTextures];
+    } else if ([sw tag] == 7752) {
+        [d setBool:[sw isOn] forKey:@"RfxDevRateLabel"];
+        [d synchronize];
+        [m_ratelabel setHidden:![sw isOn]];
+        if ([sw isOn]) [self bringSubviewToFront:m_ratelabel];
+    }
+}
+
+- (void)CloseDevMenu {
+    [[self viewWithTag:7741] removeFromSuperview];
 }
 
 - (void)SetDebugText:(NSString *)debugText {
@@ -2278,31 +2369,40 @@ static void KV_PlayStatus(NSString *text) {
         int pinch = [m_glv m_pinchstatus];
         BOOL logo = !(pinch != 0 || count >= (NSUInteger)(pad ? 4 : 3));
         if (logo) [self LogoAni:[NSNumber numberWithInt:1]];
-        double t0 = CACurrentMediaTime();
         [self StartOnePlayer:0 withVolume:[self m_lastvolume] withurl:url withclipobject:audioPlayer];
-        // Port change: the new CD starts spinning as soon as its song fades in (not only after the queue animation)
-        if (aniNext && audioPlayer != nil && [[self m_clips] indexOfObjectIdenticalTo:audioPlayer] != NSNotFound) {
+        // Port change: the new CD starts spinning and the queue starts to slide as soon as its song fades in
+        // (the original waited for the whole cross fade first, ~5 s later).
+        BOOL inQueue = (audioPlayer != nil && [[self m_clips] indexOfObjectIdenticalTo:audioPlayer] != NSNotFound);
+        if (aniNext && inQueue) {
             m_angle = 0;
             m_lastRotTime = 0;
             m_cliptorotate = audioPlayer;
             [self setM_rotateclip:YES];
-        }
-        for (;;) {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
-            if (CACurrentMediaTime() >= t0 + (double)m_crossfadetime) break;
-            if ([DEL g_end] || gv_kioskflag) break;
-        }
-        m_oldindex = m_oldindex - 1;
-        if (logo && !([DEL g_end] || gv_kioskflag))
-            [self LogoAni:[NSNumber numberWithInt:0]];
-        if (aniNext && !([DEL g_end] || gv_kioskflag)) {
-            if ([self AniToNextSong:audioPlayer withjingle:nil]) return;
+            if (logo) [self performSelector:@selector(LogoAni:) withObject:[NSNumber numberWithInt:0] afterDelay:(double)m_crossfadetime];
+            m_oldindex = m_oldindex - 1;
+            [self setM_resetfadeover:CACurrentMediaTime() + (double)m_crossfadetime + 0.9];
+            m_restEarly = YES;
+            if (!([DEL g_end] || gv_kioskflag) && [self AniToNextSong:audioPlayer withjingle:nil]) return;
+            m_restEarly = NO;
+        } else {
+            double t0 = CACurrentMediaTime();
+            for (;;) {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
+                if (CACurrentMediaTime() >= t0 + (double)m_crossfadetime) break;
+                if ([DEL g_end] || gv_kioskflag) break;
+            }
+            m_oldindex = m_oldindex - 1;
+            if (logo && !([DEL g_end] || gv_kioskflag))
+                [self LogoAni:[NSNumber numberWithInt:0]];
         }
     } else {
         m_fadingover = YES;
         m_crossfadetime = 2.0f;
         [self StartOnePlayer:0 withVolume:[self m_lastvolume] withurl:url withclipobject:audioPlayer];
         [self setM_resetfadeover:CACurrentMediaTime() + (double)m_crossfadetime + 0.9];
+        if (aniNext && audioPlayer != nil && [[self m_clips] indexOfObjectIdenticalTo:audioPlayer] != NSNotFound) {
+            m_angle = 0; m_lastRotTime = 0; m_cliptorotate = audioPlayer; [self setM_rotateclip:YES];
+        }
         if ([[self m_clips] count] >= 2 && aniNext) {
             if ([self AniToNextSong:audioPlayer withjingle:nil]) return;
         }
@@ -2327,7 +2427,7 @@ static void KV_PlayStatus(NSString *text) {
         [UIView setAnimationDidStopSelector:@selector(StartAudioPlayerRest)];
         [UIView setAnimationDelegate:self];
         [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
-        [UIView setAnimationDuration:0.6];
+        [UIView setAnimationDuration:1.6];
         [self OrderClipPics:[NSNumber numberWithInt:1]];
         [UIView commitAnimations];
         [self CheckPendingSong];
@@ -2360,7 +2460,7 @@ static void KV_PlayStatus(NSString *text) {
     [UIView setAnimationDidStopSelector:(next != nil ? @selector(StartAudioPlayerRest) : @selector(OrderClipsReady))];
     [UIView setAnimationDelegate:self];
     [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
-    [UIView setAnimationDuration:0.6];
+    [UIView setAnimationDuration:1.6];
     [self OrderClipPics:[NSNumber numberWithInt:1]];
     [UIView commitAnimations];
     [self CheckPendingSong];
@@ -2391,7 +2491,8 @@ static void KV_PlayStatus(NSString *text) {
             if (duration == 0) duration = [clip m_duration];
         }
     }
-    if (m_didfade) duration = (int)((float)duration - m_crossfadetime);
+    if (m_didfade && !m_restEarly) duration = (int)((float)duration - m_crossfadetime);
+    m_restEarly = NO;
     int dur = (duration < 0xd) ? 0xd : duration;
     [self StartDevider:dur];
     [self StartPresongTimer:dur];
@@ -2574,7 +2675,7 @@ static void KV_PlayStatus(NSString *text) {
         }
     } else {
         [self StartAudioPlayer:next withAniNext:YES witharg1:how];
-        m_fadingover = NO;
+        m_fadingover = ([self m_resetfadeover] > 0);
         ClipObject *copy = [[ClipObject alloc] init];
         [self CopyPropertiesFromObject:next toObject:copy];
         [self performSelector:@selector(SpinWhenNoAdvertising:) withObject:copy afterDelay:0.5];
