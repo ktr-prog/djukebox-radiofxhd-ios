@@ -29,4 +29,5 @@
 @property (nonatomic, retain) NSString *spotifyfolderid;
 
 - (NSInteger)compareIDs:(FolderObject *)other;
+- (NSInteger)compareTimediffs:(FolderObject *)other;
 @end

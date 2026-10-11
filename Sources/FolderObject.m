@@ -32,6 +32,11 @@
 }
 
 // Folders with id -44 are sorted by ipodid, everything else by folderid.
+- (NSInteger)compareTimediffs:(FolderObject *)other {
+    if (timediff == [other timediff]) return 0;
+    return timediff > [other timediff] ? 1 : -1;
+}
+
 - (NSInteger)compareIDs:(FolderObject *)other {
     if ([self folderid] == -44 && [other folderid] == -44) {
         long long a = [self ipodid], b = [other ipodid];
