@@ -6,9 +6,104 @@
 #import "ServerEntry.h"
 #import "FolderObject.h"
 #import "ClipObject.h"
-#import "RfxOpus.h"
 
 #define DEL ((RadioAppDelegate *)[[UIApplication sharedApplication] delegate])
+
+// ---- Ogg Opus decoder (formerly RfxOpus.h/.m, merged here so no extra file has to be added to the project)
+@interface RfxOpus : NSObject
++ (BOOL)available;
+// Decodes src to a WAV at dst. tags gets title/artist/album/duration (NSNumber seconds); *art gets the embedded picture if any.
++ (BOOL)DecodeFile:(NSString *)src toWav:(NSString *)dst tags:(NSMutableDictionary *)tags art:(NSData **)art;
+@end
+
+#include <stdio.h>
+#include <stdint.h>
+#if RFX_HAVE_OPUSFILE
+#include <opusfile.h>
+#endif
+
+@implementation RfxOpus
+
++ (BOOL)available {
+#if RFX_HAVE_OPUSFILE
+    return YES;
+#else
+    return NO;
+#endif
+}
+
+#if RFX_HAVE_OPUSFILE
+static void PutU32(unsigned char *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+static void PutU16(unsigned char *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
+
+static void WavHeader(unsigned char *h, uint32_t dataBytes) {
+    memcpy(h, "RIFF", 4);  PutU32(h + 4, 36 + dataBytes);
+    memcpy(h + 8, "WAVEfmt ", 8);  PutU32(h + 16, 16);
+    PutU16(h + 20, 1); PutU16(h + 22, 2);          // PCM, stereo
+    PutU32(h + 24, 48000); PutU32(h + 28, 48000 * 4);
+    PutU16(h + 32, 4); PutU16(h + 34, 16);
+    memcpy(h + 36, "data", 4); PutU32(h + 40, dataBytes);
+}
+
+static NSString *Tag(const OpusTags *t, const char *name) {
+    const char *v = opus_tags_query(t, name, 0);
+    return v ? [NSString stringWithUTF8String:v] : nil;
+}
+#endif
+
++ (BOOL)DecodeFile:(NSString *)src toWav:(NSString *)dst tags:(NSMutableDictionary *)tags art:(NSData **)art {
+#if RFX_HAVE_OPUSFILE
+    int err = 0;
+    OggOpusFile *of = op_open_file([src fileSystemRepresentation], &err);
+    if (of == NULL) { NSLog(@"[Opus] cannot open %@ (%d)", src, err); return NO; }
+    const OpusTags *t = op_tags(of, -1);
+    if (t != NULL) {
+        NSString *s;
+        if ((s = Tag(t, "TITLE")))  [tags setObject:s forKey:@"title"];
+        if ((s = Tag(t, "ARTIST"))) [tags setObject:s forKey:@"artist"];
+        if ((s = Tag(t, "ALBUM")))  [tags setObject:s forKey:@"album"];
+        int n = opus_tags_query_count(t, "METADATA_BLOCK_PICTURE");
+        for (int i = 0; i < n && art != NULL && *art == nil; i++) {
+            const char *v = opus_tags_query(t, "METADATA_BLOCK_PICTURE", i);
+            OpusPictureTag pic;
+            if (v != NULL && opus_picture_tag_parse(&pic, v) == 0) {
+                if (pic.data_length > 0) *art = [NSData dataWithBytes:pic.data length:pic.data_length];
+                opus_picture_tag_clear(&pic);
+            }
+        }
+    }
+    FILE *f = fopen([dst fileSystemRepresentation], "wb");
+    if (f == NULL) { op_free(of); return NO; }
+    unsigned char hdr[44];
+    memset(hdr, 0, sizeof(hdr));
+    fwrite(hdr, 1, sizeof(hdr), f);
+    static opus_int16 buf[5760 * 2];
+    uint64_t frames = 0;
+    for (;;) {
+        int n = op_read_stereo(of, buf, (int)(sizeof(buf) / sizeof(buf[0])));
+        if (n == OP_HOLE) continue;
+        if (n <= 0) break;
+        fwrite(buf, 4, (size_t)n, f);
+        frames += (uint64_t)n;
+    }
+    op_free(of);
+    BOOL ok = frames > 0;
+    if (ok) {
+        WavHeader(hdr, (uint32_t)(frames * 4));
+        fseek(f, 0, SEEK_SET);
+        fwrite(hdr, 1, sizeof(hdr), f);
+        [tags setObject:[NSNumber numberWithDouble:(double)frames / 48000.0] forKey:@"duration"];
+    }
+    fclose(f);
+    if (!ok) [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+    return ok;
+#else
+    return NO;
+#endif
+}
+
+@end
+
 
 // Documents/Import/<file>              -> folder "Imported"
 // Documents/Import/<name>/<file>       -> folder "<name>"
