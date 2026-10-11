@@ -45,9 +45,7 @@
     [super didReceiveMemoryWarning];
 }
 
-- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o {
-    return o == 3;
-}
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)o { return o == 3; }
 
 // Hide the status bar and the home indicator (UIStatusBarHidden in Info.plist is ignored by modern iOS when the
 // view controller decides; the home indicator did not exist in 2013).  See DEVIATIONS.md.
@@ -55,7 +53,7 @@
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeBottom; }
 
-// iOS 6+ replacement for shouldAutorotateToInterfaceOrientation: (see DEVIATIONS.md)
+// Landscape only (as in the original); rotation support was removed again.
 - (BOOL)shouldAutorotate { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
     return UIInterfaceOrientationMaskLandscapeRight;
@@ -77,47 +75,39 @@
     [[m_kioskview m_glv] ReInit:1];
 }
 
-- (void)didRotateFromInterfaceOrientation:(UIInterfaceOrientation)from {
-    [[NSNotificationCenter defaultCenter] postNotification:
-        [NSNotification notificationWithName:@"MsgiPadDidrotate" object:nil]];
+// The legacy willRotate/didRotate callbacks are not delivered on current iOS; the same work is done around the size transition.
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     if (m_kioskview == nil) return;
-    CGSize sz = [(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] GetiPadSize];
-    [[m_kioskview m_glv] SetDrawVars:sz];
-    [[m_kioskview m_glv] ReInit:1];
-    [[m_kioskview m_glv] setM_rotateready:1];
-    [[m_kioskview m_glv] ReInitThread];
-}
-
-- (void)willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)o duration:(NSTimeInterval)duration {
-    CGSize sz = [(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] GetiPadSize];
-    if (m_kioskview == nil) return;
-    [m_kioskview setFrame:CGRectMake(0.0f, 0.0f, sz.width, sz.height)];
-    [m_kioskview FitSubViews:sz];
-}
-
-- (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)o duration:(NSTimeInterval)duration {
-    if (m_kioskview == nil) return;
-    [[m_kioskview m_glv] setM_drawemptyturn:1];
-    [[m_kioskview m_glv] drawView];
-    [[m_kioskview m_glv] setM_rotateready:0];
-    int n = 0;
-    GLView *glv;
-    for (;;) {
-        BOOL again;
-        if (![[m_kioskview m_glv] m_threadwaiting]) {
-            again = (n < 0x14);
-            n++;
-        } else {
-            again = NO;
-        }
-        glv = [m_kioskview m_glv];
-        if (!again) break;
+    RadioAppDelegate *d = (RadioAppDelegate *)[[UIApplication sharedApplication] delegate];
+    [d SetTransitionSize:size];
+    GLView *glv = [m_kioskview m_glv];
+    // before: black out the flow, wait for the texture thread, drop the framebuffer of the old size
+    [glv setM_drawemptyturn:1];
+    [glv drawView];
+    [glv setM_rotateready:0];
+    for (int n = 0; n < 0x14 && ![glv m_threadwaiting]; n++) {
         [glv setM_drawemptyturn:1];
         [NSThread sleepForTimeInterval:0.01];
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 0);
     }
     [glv EmptyAllTextures];
-    [[m_kioskview m_glv] destroyFramebuffer];
+    [glv destroyFramebuffer];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+        [m_kioskview setFrame:CGRectMake(0.0f, 0.0f, size.width, size.height)];
+        [m_kioskview FitSubViews:size];
+    } completion:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+        [d SetTransitionSize:CGSizeZero];
+        CGSize sz = [d GetiPadSize];
+        [m_kioskview setFrame:CGRectMake(0.0f, 0.0f, sz.width, sz.height)];
+        [m_kioskview FitSubViews:sz];
+        [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:@"MsgiPadDidrotate" object:nil]];
+        [glv SetDrawVars:sz];
+        [glv SetUpTippRects];
+        [glv ReInit:1];
+        [glv setM_rotateready:1];
+        [glv ReInitThread];
+    }];
 }
 
 - (void)ShowKioskMode {

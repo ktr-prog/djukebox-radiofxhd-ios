@@ -1176,6 +1176,25 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
     }
 }
 
+// Removes the clips that are in the play queue from a candidate list.
+- (void)RemoveQueuedFrom:(NSMutableArray *)cand {
+    NSArray *q = [m_parent m_clips];
+    for (int i = (int)[cand count] - 1; i >= 0; i--) {
+        ClipObject *c = [cand objectAtIndex:i];
+        for (ClipObject *queued in q) {
+            if ([queued ID] == [c ID] && [queued m_ipodid] == [c m_ipodid]) { [cand removeObjectAtIndex:i]; break; }
+        }
+    }
+}
+
+// A song that was started (by the user or by the shuffle) is not picked again until every song has been played.
+- (void)MarkClipPlayed:(ClipObject *)clip {
+    if (clip == nil) return;
+    for (ClipObject *played in m_randomarray)
+        if ([played ID] == [clip ID] && [played m_ipodid] == [clip m_ipodid]) return;
+    [m_randomarray addObject:clip];
+}
+
 // Picks the next clip for "random"/auto play: a not yet played one of the current list (an album gives a random track).
 // Returns a retained copy, nil when there is nothing.
 - (ClipObject *)getNextClipObject {
@@ -1194,11 +1213,18 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
                 }
             }
         }
+        // songs waiting in (or playing from) the queue count as played, too
+        [self RemoveQueuedFrom:cand];
         if ([cand count] == 0) {
+            // everybody has been through: start a new shuffle round
             NSString *st = [self GetSearchText];
             if (st == nil || [st length] == 0) [m_randomarray removeAllObjects];
             [cand addObjectsFromArray:[self m_tilearray]];
             [self RemoveVirtBrandingSong:cand];
+            NSMutableArray *keep = [[NSMutableArray alloc] initWithArray:cand];
+            [self RemoveQueuedFrom:cand];
+            if ([cand count] == 0) [cand addObjectsFromArray:keep];
+            [keep release];
         }
         ClipObject *pick = nil;
         if ([cand count] != 0) {

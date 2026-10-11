@@ -203,6 +203,16 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     if ((r = AUGraphOpen(mGraph))) return r;
     if ((r = AUGraphNodeInfo(mGraph, mixerNode, NULL, &mMixer))) return r;
 
+    // Port fix: with the screen locked iOS renders in 4096-frame slices; the mixer default (1156) makes every render call
+    // fail with kAudioUnitErr_TooManyFramesToProcess, i.e. the music goes silent when the device sleeps.
+    {
+        UInt32 maxFrames = 4096;
+        AudioUnitSetProperty(mMixer, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &maxFrames, sizeof(maxFrames));
+        AudioUnit outUnit = NULL;
+        if (AUGraphNodeInfo(mGraph, outputNode, NULL, &outUnit) == noErr && outUnit != NULL)
+            AudioUnitSetProperty(outUnit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &maxFrames, sizeof(maxFrames));
+    }
+
     UInt32 numBuses = kMCMNumBuses;
     if ((r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_ElementCount, kAudioUnitScope_Input, 0, &numBuses, sizeof(numBuses)))) return r;
 

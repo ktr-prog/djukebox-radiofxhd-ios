@@ -1065,7 +1065,8 @@ static CGSize gTransitionSize;   // size the window is rotating to (UIScreen.bou
     // Port change: fills the whole screen in the current orientation instead of the fixed 1024x768 / 480x320.
     if (gTransitionSize.width > 0.0f && gTransitionSize.height > 0.0f) return gTransitionSize;
     CGRect b = [[UIScreen mainScreen] bounds];
-    if (b.size.width > 0.0f && b.size.height > 0.0f) return b.size;
+    float w = fmaxf(b.size.width, b.size.height), h = fminf(b.size.width, b.size.height);
+    if (w > 0.0f && h > 0.0f) return CGSizeMake(w, h);
     if (m_isipad) return CGSizeMake(1024.0f, 768.0f);
     return CGSizeMake(480.0f, 320.0f);
 }

@@ -243,6 +243,10 @@
         [self FolderTimerfunc:nil];
         m_first_start = NO;
         [NSThread detachNewThreadSelector:@selector(TimerThread) toTarget:self withObject:nil];
+        {
+            CADisplayLink *rl = [CADisplayLink displayLinkWithTarget:self selector:@selector(RotationFrame)];
+            [rl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        }
         if (m_sve != nil)
             [self performSelector:@selector(StartThread) withObject:nil afterDelay:0];
 
@@ -659,7 +663,21 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
             if ([[tiles objectAtIndex:i] ID] == -5) [tiles removeObjectAtIndex:i];
         }
         if ([tiles count] != 0) {
-            ClipObject *t = [tiles objectAtIndex:(random() % [tiles count])];
+            // continue with the song that was playing when the app was closed (first start only)
+            static BOOL resumed = NO;
+            ClipObject *t = nil;
+            if (!resumed) {
+                resumed = YES;
+                long long last = [[[NSUserDefaults standardUserDefaults] objectForKey:@"RfxLastClipID"] longLongValue];
+                if (last > 0) {
+                    for (ClipObject *c in tiles) {
+                        if ([c ID] == last) { t = c; break; }
+                        for (ClipObject *tr in ([c m_tracks] ? [c m_tracks] : [NSArray array])) if ([tr ID] == last) { t = c; break; }
+                        if (t != nil) break;
+                    }
+                }
+            }
+            if (t == nil) t = [tiles objectAtIndex:(random() % [tiles count])];
             ClipObject *src = ([t m_tracks] != nil && [[t m_tracks] count] != 0) ? [[t m_tracks] objectAtIndex:0] : t;
             pick = [[ClipObject alloc] init];
             [self CopyPropertiesFromObject:src toObject:pick];
@@ -2227,6 +2245,11 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)StartAudioPlayer:(ClipObject *)audioPlayer withAniNext:(BOOL)aniNext witharg1:(int)arg1 {
+    if (audioPlayer != nil) {
+        [m_glv MarkClipPlayed:audioPlayer];
+        if ([audioPlayer ID] > 0)
+            [[NSUserDefaults standardUserDefaults] setObject:[NSNumber numberWithLongLong:[audioPlayer ID]] forKey:@"RfxLastClipID"];
+    }
     [self setM_crossfadeInitTime:-1.0];
     m_didfade = NO;
     if (audioPlayer != nil && [audioPlayer m_folderid] != -44 && !m_autoselected) {
@@ -2250,6 +2273,13 @@ static void KV_PlayStatus(NSString *text) {
         if (logo) [self LogoAni:[NSNumber numberWithInt:1]];
         double t0 = CACurrentMediaTime();
         [self StartOnePlayer:0 withVolume:[self m_lastvolume] withurl:url withclipobject:audioPlayer];
+        // Port change: the new CD starts spinning as soon as its song fades in (not only after the queue animation)
+        if (aniNext && audioPlayer != nil && [[self m_clips] indexOfObjectIdenticalTo:audioPlayer] != NSNotFound) {
+            m_angle = 0;
+            m_lastRotTime = 0;
+            m_cliptorotate = audioPlayer;
+            [self setM_rotateclip:YES];
+        }
         for (;;) {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
             if (CACurrentMediaTime() >= t0 + (double)m_crossfadetime) break;
@@ -2277,8 +2307,11 @@ static void KV_PlayStatus(NSString *text) {
 - (BOOL)AniToNextSong:(ClipObject *)aniToNextSong withjingle:(NSString *)jingle {
     ClipObject *first = [[self m_clips] rfx_objectAtIndex:0];
     if ([[self m_clips] count] >= 2) {
-        [self setM_rotateclip:NO];
-        m_cliptorotate = nil;
+        BOOL keepSpin = (m_cliptorotate != nil && m_cliptorotate != first && [self m_rotateclip]);
+        if (!keepSpin) {
+            [self setM_rotateclip:NO];
+            m_cliptorotate = nil;
+        }
         RemoveClipViews(first);
         [[self m_clips] rfx_removeObjectAtIndex:0];
         m_ordering = YES;
@@ -2332,11 +2365,13 @@ static void KV_PlayStatus(NSString *text) {
     m_ordering = NO;
     ClipObject *clip = nil;
     if ([[self m_clips] count] != 0) clip = [[[self m_clips] rfx_objectAtIndex:0] retain];
+    BOOL keepSpin = (clip != nil && m_cliptorotate == clip && [self m_rotateclip]);
+    double keptAngle = m_angle;
     [self setM_shrinkdevider:NO];
     [self setM_rotateclip:NO];
     [self setM_presongInitTime:-1.0];
     [self SetDeviderPlayingPercent:0.0f];
-    m_angle = 0;
+    m_angle = keepSpin ? keptAngle : 0;
     m_cliptorotate = nil;
     int duration = 0;
     if (clip != nil) {
@@ -2774,6 +2809,11 @@ static void KV_PlayStatus(NSString *text) {
     [self SetDeviderPlayingPercent:0.0f];
 }
 
+- (void)RotationFrame {
+    if (![self m_rotateclip] || [(RadioAppDelegate *)[[UIApplication sharedApplication] delegate] m_isinbackground]) { m_lastRotTime = 0; return; }
+    [self RotationTimerFunction];
+}
+
 - (void)RotationTimerFunction {
     if (!m_cantransform || m_cliptorotate == nil || m_blackview != nil) return;
     // m_cliptorotate is not retained: make sure the clip still exists before touching it (pointer compare only)
@@ -2782,9 +2822,14 @@ static void KV_PlayStatus(NSString *text) {
         m_rotateclip = NO;
         return;
     }
-    m_angle += 2;
-    if (m_angle > 360) m_angle -= 360;
-    [[m_cliptorotate m_imgv] setTransform:CGAffineTransformMakeRotation((float)(((double)m_angle / 180.0) * M_PI))];
+    // driven by a CADisplayLink: 40 degrees per second, independent of the frame timing (was 2 degrees per 50 ms tick)
+    double now = CACurrentMediaTime();
+    double dt = (m_lastRotTime > 0) ? (now - m_lastRotTime) : 0.0;
+    m_lastRotTime = now;
+    if (dt > 0.1) dt = 0.1;
+    m_angle += 40.0 * dt;
+    if (m_angle > 360.0) m_angle -= 360.0;
+    [[m_cliptorotate m_imgv] setTransform:CGAffineTransformMakeRotation((float)((m_angle / 180.0) * M_PI))];
 }
 
 - (void)LogoAni:(NSNumber *)logoAni {
@@ -2873,8 +2918,6 @@ static void KV_PlayStatus(NSString *text) {
             pool = [[NSAutoreleasePool alloc] init];
         }
         BOOL bg = [dg m_isinbackground];
-        if ([self m_rotateclip] && !bg)
-            [self performSelectorOnMainThread:@selector(RotationTimerFunction) withObject:nil waitUntilDone:NO];
         if ([self m_shrinkdevider] && !bg)
             [self performSelectorOnMainThread:@selector(DeviderTimerFunc) withObject:nil waitUntilDone:NO];
 

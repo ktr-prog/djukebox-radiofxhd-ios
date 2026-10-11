@@ -19,7 +19,8 @@
     BOOL cancelcopy;
     double startTime;
     int border;
-    int m_angle;
+    double m_angle;
+    double m_lastRotTime;
     double m_clipStartTime;
     double m_clipDuration;
     ClipObject *m_draggingobj;
@@ -279,6 +280,7 @@
 - (void)SetDeviderPlayingPercentMT;
 - (int)CalcXDiff:(float)calcXDiff;
 - (void)RotationTimerFunction;
+- (void)RotationFrame;
 - (void)TimerThread;
 
 // unchanged helpers used by the forwarders
