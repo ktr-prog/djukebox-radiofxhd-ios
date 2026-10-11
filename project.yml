@@ -19,12 +19,17 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: ThirdParty/opusfile/src
+        optional: true
+        includes: ["opusfile.c", "info.c", "internal.c", "stream.c"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tobit.fl.Radiofxhd
         INFOPLIST_FILE: Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/ThirdParty/opusfile/include $(SRCROOT)/ThirdParty/out/include $(SRCROOT)/ThirdParty/out/include/opus"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/ThirdParty/out/lib"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) OP_DISABLE_HTTP=1 OP_DISABLE_DOCS=1"
     postBuildScripts:
       - name: Copy original resources
         script: |
