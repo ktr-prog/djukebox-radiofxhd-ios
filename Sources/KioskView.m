@@ -19,7 +19,7 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
-#import <WebKit/WebKit.h>
+#import <JavaScriptCore/JavaScriptCore.h>
 
 // Fast switching / queue dragging can touch the queue while it is changing; an out-of-range index must not
 // take the whole app down.  These behave like the NSMutableArray methods but ignore a bad index.
@@ -56,233 +56,482 @@
 #define BARH (ISIPAD ? 0x7e : 0x5a)
 
 
-#pragma mark - Qobuz web player panel (dev menu, step 1: sign in + probe)
+#pragma mark - Quellen (source plugins, ricercar protocol 1 via a bridge)
 
-// Hosts the official Qobuz web player in a WKWebView (persistent cookies, so the premium login is kept) and can dump
-// what the page exposes (media session, <audio>/<video> state, buttons) into a text view and into
-// Documents/qobuz-probe.txt.  That report is the basis for the later skin / search bridge.
-@interface RfxQobuzPanel : UIView <WKNavigationDelegate, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate> {
-    WKWebView *m_web;
-    UITextView *m_log;
-    UITableView *m_table;
-    UITextField *m_query;
-    NSMutableArray *m_results;      // NSDictionary: id, title, artist, album, cover, duration
+// Speaks the ricercar source-plugin protocol (JSON-RPC 2.0, protocol 1) to a plugin that runs on a computer in the
+// user's network behind Tools/rfx-plugin-bridge.py.  The host is neutral: it knows no service, ships no plugin and
+// holds no credentials; sign-in goes through the plugin's auth.begin / auth.complete (the user opens the address in
+// the browser and pastes back what the plugin asks for).
+// A source plugin written in JavaScript, running inside the app (JavaScriptCore).  The script defines
+// handle(method, params) -> Promise and speaks the ricercar plugin protocol 1 method names.  It gets fetchText(url, opts),
+// hostLog(text), hostOpen(url) and hostGet/hostSet(key[, value]) (small per-plugin storage).
+@interface RfxJSPlugin : NSObject {
+    JSContext *m_ctx;
+    int m_nextid;
+    NSMutableDictionary *m_pending;
+    NSString *m_pid;
 }
-- (void)Probe;
+- (id)initWithScript:(NSString *)src pluginId:(NSString *)pid error:(NSString **)err;
+- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id result, NSString *err))done;
 @end
 
-@implementation RfxQobuzPanel
+@implementation RfxJSPlugin
+
+- (id)initWithScript:(NSString *)src pluginId:(NSString *)pid error:(NSString **)err {
+    self = [super init];
+    if (!self) return nil;
+    m_nextid = 1;
+    m_pending = [[NSMutableDictionary alloc] init];
+    m_pid = [pid retain];
+    m_ctx = [[JSContext alloc] init];
+    __block NSString *firstError = nil;
+    RfxJSPlugin *me = self;
+    [m_ctx setExceptionHandler:^(JSContext *c, JSValue *ex) { if (firstError == nil) firstError = [[ex toString] retain]; }];
+    m_ctx[@"__native_log"] = ^(NSString *t) { NSLog(@"[plugin %@] %@", pid, t); };
+    m_ctx[@"__native_open"] = ^(NSString *u) {
+        NSURL *url = [NSURL URLWithString:u];
+        if (url != nil) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    };
+    m_ctx[@"__native_get"] = ^NSString *(NSString *k) {
+        return [[NSUserDefaults standardUserDefaults] stringForKey:[NSString stringWithFormat:@"RfxPlugin.%@.%@", pid, k]];
+    };
+    m_ctx[@"__native_set"] = ^(NSString *k, NSString *v) {
+        NSString *key = [NSString stringWithFormat:@"RfxPlugin.%@.%@", pid, k];
+        if (v == nil || [v length] == 0) [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+        else [[NSUserDefaults standardUserDefaults] setObject:v forKey:key];
+    };
+    m_ctx[@"__native_fetch"] = ^(int fid, NSString *url, NSString *optsJson) {
+        NSDictionary *o = nil;
+        if (optsJson != nil) {
+            id j = [NSJSONSerialization JSONObjectWithData:[optsJson dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            if ([j isKindOfClass:[NSDictionary class]]) o = j;
+        }
+        NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
+        NSString *meth = [o objectForKey:@"method"];
+        if (meth != nil) [r setHTTPMethod:meth];
+        NSDictionary *hd = [o objectForKey:@"headers"];
+        for (NSString *k in hd) [r setValue:[NSString stringWithFormat:@"%@", [hd objectForKey:k]] forHTTPHeaderField:k];
+        NSString *body = [o objectForKey:@"body"];
+        if (body != nil) [r setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
+        [r setTimeoutInterval:30.0];
+        [[[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *resp, NSError *e) {
+            NSString *text = (data != nil) ? [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease] : nil;
+            NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                JSValue *fn = me->m_ctx[@"__fetchDone"];
+                if (e != nil) [fn callWithArguments:@[@(fid), @NO, [e localizedDescription], @0]];
+                else [fn callWithArguments:@[@(fid), @YES, (text != nil ? text : @""), @(code)]];
+            });
+        }] resume];
+    };
+    m_ctx[@"__native_reply"] = ^(int cid, BOOL ok, NSString *payload) {
+        NSNumber *key = [NSNumber numberWithInt:cid];
+        void (^d)(id, NSString *) = [[me->m_pending objectForKey:key] retain];
+        [me->m_pending removeObjectForKey:key];
+        if (d == nil) return;
+        if (ok) {
+            id r = nil;
+            if (payload != nil && [payload length] > 0)
+                r = [NSJSONSerialization JSONObjectWithData:[payload dataUsingEncoding:NSUTF8StringEncoding] options:NSJSONReadingAllowFragments error:nil];
+            d((r == [NSNull null] ? nil : r), nil);
+        } else {
+            d(nil, payload != nil ? payload : @"Fehler im Plugin");
+        }
+        [d release];
+    };
+    NSString *shim =
+    @"var __cbs = {}; var __n = 0;"
+    "function fetchText(url, opts) { return new Promise(function (res, rej) { var id = ++__n; __cbs[id] = [res, rej];"
+    "  __native_fetch(id, url, JSON.stringify(opts || {})); }); }"
+    "function __fetchDone(id, ok, body, status) { var c = __cbs[id]; delete __cbs[id]; if (!c) return;"
+    "  if (ok) c[0]({ status: status, text: body }); else c[1](new Error(body)); }"
+    "function hostLog(t) { __native_log(String(t)); }"
+    "function hostOpen(u) { __native_open(String(u)); }"
+    "function hostGet(k) { return __native_get(String(k)); }"
+    "function hostSet(k, v) { __native_set(String(k), v == null ? '' : String(v)); }"
+    "function __dispatch(id, method, paramsJson) {"
+    "  Promise.resolve().then(function () { return handle(method, JSON.parse(paramsJson)); })"
+    "   .then(function (r) { __native_reply(id, true, JSON.stringify(r === undefined ? null : r)); },"
+    "         function (e) { __native_reply(id, false, String((e && e.message) || e)); }); }";
+    [m_ctx evaluateScript:shim];
+    [m_ctx evaluateScript:src];
+    if (firstError == nil && [[m_ctx[@"handle"] toString] hasPrefix:@"undefined"]) firstError = [@"Das Plugin definiert keine Funktion handle(method, params)." retain];
+    if (firstError != nil) {
+        if (err != NULL) *err = [firstError autorelease];
+        [self release];
+        return nil;
+    }
+    [m_ctx setExceptionHandler:^(JSContext *c, JSValue *ex) { NSLog(@"[plugin %@] JS-Fehler: %@", pid, ex); }];
+    return self;
+}
+
+- (void)dealloc {
+    [m_ctx release]; [m_pending release]; [m_pid release];
+    [super dealloc];
+}
+
+- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id, NSString *))done {
+    int cid = m_nextid++;
+    [m_pending setObject:[[done copy] autorelease] forKey:[NSNumber numberWithInt:cid]];
+    NSData *pj = [NSJSONSerialization dataWithJSONObject:(params != nil ? params : [NSDictionary dictionary]) options:0 error:nil];
+    NSString *ps = [[[NSString alloc] initWithData:pj encoding:NSUTF8StringEncoding] autorelease];
+    [[m_ctx objectForKeyedSubscript:@"__dispatch"] callWithArguments:@[@(cid), method, ps]];
+}
+
+@end
+
+@interface RfxPluginHost : NSObject {
+    NSURL *m_base;
+    RfxJSPlugin *m_js;
+    int m_nextid;
+    NSDictionary *m_caps;
+    NSString *m_pluginName;
+}
+@property (nonatomic, retain) NSDictionary *caps;
+@property (nonatomic, retain) NSString *pluginName;
+- (id)initWithBase:(NSURL *)base;
+- (id)initWithJS:(RfxJSPlugin *)js;
+- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id result, NSString *err))done;
+- (void)initializeDone:(void (^)(NSString *err))done;
+- (BOOL)has:(NSString *)cap;
+@end
+
+@implementation RfxPluginHost
+@synthesize caps = m_caps, pluginName = m_pluginName;
+
+- (id)initWithBase:(NSURL *)base {
+    self = [super init];
+    if (self) { m_base = [base retain]; m_nextid = 1; }
+    return self;
+}
+- (id)initWithJS:(RfxJSPlugin *)js {
+    self = [super init];
+    if (self) { m_js = [js retain]; m_nextid = 1; }
+    return self;
+}
+- (void)dealloc { [m_base release]; [m_js release]; [m_caps release]; [m_pluginName release]; [super dealloc]; }
+
+- (BOOL)has:(NSString *)cap { return [[m_caps objectForKey:cap] boolValue]; }
+
+- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id, NSString *))done {
+    if (m_js != nil) { [m_js call:method params:params done:done]; return; }
+    NSDictionary *msg = [NSDictionary dictionaryWithObjectsAndKeys:@"2.0", @"jsonrpc", [NSNumber numberWithInt:m_nextid++], @"id",
+                         method, @"method", (params != nil ? params : [NSDictionary dictionary]), @"params", nil];
+    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"rpc" relativeToURL:m_base]];
+    [r setHTTPMethod:@"POST"];
+    [r setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [r setHTTPBody:[NSJSONSerialization dataWithJSONObject:msg options:0 error:nil]];
+    [r setTimeoutInterval:70.0];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        id result = nil; NSString *e = nil;
+        if (err != nil) e = [err localizedDescription];
+        else {
+            id o = (data != nil) ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            if (![o isKindOfClass:[NSDictionary class]]) e = @"Unlesbare Antwort der Brücke";
+            else if ([o objectForKey:@"error"] != nil) {
+                id er = [o objectForKey:@"error"];
+                e = [er isKindOfClass:[NSDictionary class]] ? [NSString stringWithFormat:@"%@", ([er objectForKey:@"message"] ? [er objectForKey:@"message"] : er)] : [NSString stringWithFormat:@"%@", er];
+            } else result = [o objectForKey:@"result"];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ done(result, e); });
+    }] resume];
+}
+
+- (void)initializeDone:(void (^)(NSString *))done {
+    NSDictionary *out = [NSDictionary dictionaryWithObjectsAndKeys:@"ios", @"device", [NSNumber numberWithBool:NO], @"bit_perfect",
+                         [NSNumber numberWithInt:192000], @"max_rate", [NSNumber numberWithInt:24], @"max_bits",
+                         [NSArray arrayWithObjects:@44100, @48000, @88200, @96000, @176400, @192000, nil], @"rates", nil];
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithInt:1], @"protocol",
+                       [NSDictionary dictionaryWithObjectsAndKeys:@"radiofx", @"name", @"1.0", @"version", nil], @"host",
+                       @"", @"data_dir", @"", @"cache_dir", @"de-DE", @"locale", out, @"output",
+                       [NSDictionary dictionary], @"settings", nil];
+    [self call:@"initialize" params:p done:^(id result, NSString *e) {
+        if (e != nil) { done(e); return; }
+        [self setCaps:[result objectForKey:@"capabilities"]];
+        [self setPluginName:[[result objectForKey:@"plugin"] objectForKey:@"name"]];
+        done(nil);
+    }];
+}
+@end
+
+@interface RfxSourcesPanel : UIView <UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate> {
+    RfxPluginHost *m_host;
+    UITextField *m_addr, *m_query;
+    UILabel *m_status;
+    UITableView *m_table;
+    NSMutableArray *m_items;
+    NSMutableArray *m_back;        // stack of NSDictionary {title, items}
+}
+@end
+
+@implementation RfxSourcesPanel
+
+- (UIButton *)Btn:(NSString *)t x:(float)x y:(float)y w:(float)w tag:(int)tag {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setFrame:CGRectMake(x, y, w, 40.0f)];
+    [b setTitle:t forState:UIControlStateNormal];
+    [b setTag:tag];
+    [b addTarget:self action:@selector(ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:b];
+    return b;
+}
 
 - (id)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
-    m_results = [[NSMutableArray alloc] init];
-    [self setBackgroundColor:[UIColor blackColor]];
+    m_items = [[NSMutableArray alloc] init];
+    m_back = [[NSMutableArray alloc] init];
+    [self setBackgroundColor:[UIColor colorWithWhite:0.06f alpha:1.0f]];
     [self setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
-    WKWebViewConfiguration *cfg = [[[WKWebViewConfiguration alloc] init] autorelease];
-    [cfg setAllowsInlineMediaPlayback:YES];
-    [cfg setMediaTypesRequiringUserActionForPlayback:WKAudiovisualMediaTypeNone];
-    [cfg setWebsiteDataStore:[WKWebsiteDataStore defaultDataStore]];
-    float bar = 56.0f, srow = 48.0f, top = bar + srow;
-    m_web = [[WKWebView alloc] initWithFrame:CGRectMake(0, top, frame.size.width, frame.size.height * 0.60f - top) configuration:cfg];
-    [m_web setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
-    [m_web setNavigationDelegate:self];
-    [self addSubview:m_web]; [m_web release];
-    CGRect lower = CGRectMake(0, frame.size.height * 0.60f, frame.size.width, frame.size.height * 0.40f);
-    m_table = [[UITableView alloc] initWithFrame:lower style:UITableViewStylePlain];
-    [m_table setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin];
-    [m_table setBackgroundColor:[UIColor colorWithWhite:0.08f alpha:1.0f]];
-    [m_table setDataSource:self]; [m_table setDelegate:self];
-    [self addSubview:m_table]; [m_table release];
-    m_log = [[UITextView alloc] initWithFrame:lower];
-    [m_log setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin];
-    [m_log setBackgroundColor:[UIColor colorWithWhite:0.08f alpha:1.0f]];
-    [m_log setTextColor:[UIColor colorWithWhite:0.85f alpha:1.0f]];
-    [m_log setFont:[UIFont fontWithName:@"Courier" size:12.0f]];
-    [m_log setEditable:NO];
-    [m_log setHidden:YES];
-    [self addSubview:m_log]; [m_log release];
-    NSArray *titles = [NSArray arrayWithObjects:@"Schließen", @"Konto", @"Protokoll", @"Neu laden", nil];
-    for (int i = 0; i < 4; i++) {
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        [b setFrame:CGRectMake(12.0f + i * 130.0f, 8.0f, 120.0f, 40.0f)];
-        [b setTitle:[titles objectAtIndex:i] forState:UIControlStateNormal];
-        [b setTag:i];
-        [b addTarget:self action:@selector(ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:b];
-    }
-    m_query = [[UITextField alloc] initWithFrame:CGRectMake(12.0f, bar + 4.0f, frame.size.width - 150.0f, 38.0f)];
+    float W = frame.size.width, y = 12.0f;
+    [self Btn:@"Schließen" x:12 y:y w:110 tag:0];
+    [self Btn:@"Verbinden" x:132 y:y w:110 tag:1];
+    [self Btn:@"Anmelden" x:252 y:y w:110 tag:2];
+    [self Btn:@"Abmelden" x:372 y:y w:110 tag:3];
+    [self Btn:@"Zurück" x:492 y:y w:90 tag:4];
+    y += 50.0f;
+    m_addr = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
+    [m_addr setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
+    [m_addr setBorderStyle:UITextBorderStyleRoundedRect];
+    [m_addr setPlaceholder:@"Leer lassen = Plugins in der App. Oder Adresse einer Plugin-Brücke"];
+    [m_addr setKeyboardType:UIKeyboardTypeURL];
+    [m_addr setAutocapitalizationType:UITextAutocapitalizationTypeNone];
+    [m_addr setAutocorrectionType:UITextAutocorrectionTypeNo];
+    [m_addr setText:[[NSUserDefaults standardUserDefaults] stringForKey:@"RfxBridgeURL"]];
+    [self addSubview:m_addr]; [m_addr release];
+    y += 44.0f;
+    m_query = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
     [m_query setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
     [m_query setBorderStyle:UITextBorderStyleRoundedRect];
-    [m_query setPlaceholder:@"Qobuz durchsuchen (Titel, Interpret)"];
+    [m_query setPlaceholder:@"Suchen (Titel, Interpret, Album)"];
     [m_query setReturnKeyType:UIReturnKeySearch];
     [m_query setDelegate:self];
     [self addSubview:m_query]; [m_query release];
-    UIButton *sb = [UIButton buttonWithType:UIButtonTypeSystem];
-    [sb setFrame:CGRectMake(frame.size.width - 130.0f, bar + 4.0f, 118.0f, 38.0f)];
-    [sb setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin];
-    [sb setTitle:@"Suchen" forState:UIControlStateNormal];
-    [sb setTag:10];
-    [sb addTarget:self action:@selector(ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [self addSubview:sb];
-    NSURL *u = [NSURL URLWithString:@"https://play.qobuz.com/"];
-    [m_web loadRequest:[NSURLRequest requestWithURL:u]];
+    y += 44.0f;
+    m_status = [[UILabel alloc] initWithFrame:CGRectMake(12, y, W - 24, 38)];
+    [m_status setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
+    [m_status setNumberOfLines:2];
+    [m_status setFont:[UIFont systemFontOfSize:14.0f]];
+    [m_status setTextColor:[UIColor colorWithWhite:0.75f alpha:1.0f]];
+    [m_status setText:@"Nicht verbunden."];
+    [self addSubview:m_status]; [m_status release];
+    y += 40.0f;
+    m_table = [[UITableView alloc] initWithFrame:CGRectMake(0, y, W, frame.size.height - y) style:UITableViewStylePlain];
+    [m_table setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    [m_table setBackgroundColor:[UIColor clearColor]];
+    [m_table setDataSource:self]; [m_table setDelegate:self];
+    [self addSubview:m_table]; [m_table release];
     return self;
 }
 
-- (void)dealloc { [m_results release]; [super dealloc]; }
+- (void)dealloc { [m_host release]; [m_items release]; [m_back release]; [super dealloc]; }
 
-- (void)ButtonTapped:(UIButton *)b {
-    switch ([b tag]) {
-    case 0: [m_web stopLoading]; [self removeFromSuperview]; break;
-    case 1: [self AskAccount]; break;
-    case 2: [self Probe]; break;
-    case 3: [m_web reload]; break;
-    case 10: [self Search]; break;
-    }
-}
+- (void)Say:(NSString *)t { [m_status setText:t]; }
 
-- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self Search]; return YES; }
-
-#pragma mark account + search (metadata only; nothing is downloaded or stored)
-
-- (void)AskAccount {
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Qobuz-Konto"
-        message:@"App-ID (von Qobuz), E-Mail und Passwort deines Premium-Kontos. Wird nur auf diesem Gerät gespeichert."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"App-ID"]; [t setText:[d stringForKey:@"RfxQobuzAppID"]]; }];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"E-Mail"]; [t setText:[d stringForKey:@"RfxQobuzEmail"]]; [t setKeyboardType:UIKeyboardTypeEmailAddress]; [t setAutocapitalizationType:UITextAutocapitalizationTypeNone]; }];
-    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"Passwort"]; [t setText:[d stringForKey:@"RfxQobuzPass"]]; [t setSecureTextEntry:YES]; }];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Speichern" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        NSArray *f = [ac textFields];
-        [d setObject:[[f objectAtIndex:0] text] forKey:@"RfxQobuzAppID"];
-        [d setObject:[[f objectAtIndex:1] text] forKey:@"RfxQobuzEmail"];
-        [d setObject:[[f objectAtIndex:2] text] forKey:@"RfxQobuzPass"];
-        [d removeObjectForKey:@"RfxQobuzToken"];
-        [d synchronize];
-    }]];
+- (void)Alert:(NSString *)title msg:(NSString *)msg {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
     while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
     [vc presentViewController:ac animated:YES completion:nil];
 }
 
-- (void)ShowMessage:(NSString *)msg {
-    [m_log setText:msg]; [m_log setHidden:NO]; [m_table setHidden:YES];
-}
-
-- (void)GetJSON:(NSString *)path params:(NSDictionary *)p token:(NSString *)token done:(void (^)(NSDictionary *, NSString *))done {
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    NSMutableString *q = [NSMutableString stringWithFormat:@"https://www.qobuz.com/api.json/0.2/%@?app_id=%@", path,
-        [[d stringForKey:@"RfxQobuzAppID"] stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]]];
-    NSMutableCharacterSet *ok = [[[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy] autorelease];
-    [ok removeCharactersInString:@"&=+?#"];
-    for (NSString *k in p) [q appendFormat:@"&%@=%@", k, [[p objectForKey:k] stringByAddingPercentEncodingWithAllowedCharacters:ok]];
-    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:q]];
-    if (token != nil) [r setValue:token forHTTPHeaderField:@"X-User-Auth-Token"];
-    [[[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        NSDictionary *j = nil; NSString *e = nil;
-        NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
-        if (err != nil) e = [err localizedDescription];
-        else {
-            id o = (data != nil) ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            if ([o isKindOfClass:[NSDictionary class]]) j = o;
-            if (code != 200) e = [NSString stringWithFormat:@"HTTP %ld %@", (long)code, (j != nil ? [j objectForKey:@"message"] : @"")];
-            else if (j == nil) e = @"Unlesbare Antwort";
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{ done(j, e); });
-    }] resume];
-}
-
-- (void)Search {
-    NSString *qs = [[m_query text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if ([qs length] == 0) return;
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    if ([[d stringForKey:@"RfxQobuzAppID"] length] == 0 || [[d stringForKey:@"RfxQobuzEmail"] length] == 0) {
-        [self ShowMessage:@"Bitte zuerst über \"Konto\" App-ID, E-Mail und Passwort eintragen."];
-        return;
-    }
-    [self ShowMessage:@"Suche ..."];
-    NSString *token = [d stringForKey:@"RfxQobuzToken"];
-    if (token == nil) {
-        NSDictionary *lp = [NSDictionary dictionaryWithObjectsAndKeys:[d stringForKey:@"RfxQobuzEmail"], @"email",
-                            ([d stringForKey:@"RfxQobuzPass"] != nil ? [d stringForKey:@"RfxQobuzPass"] : @""), @"password", nil];
-        [self GetJSON:@"user/login" params:lp token:nil done:^(NSDictionary *j, NSString *e) {
-            NSString *t = [j objectForKey:@"user_auth_token"];
-            if (e != nil || t == nil) { [self ShowMessage:[NSString stringWithFormat:@"Anmeldung fehlgeschlagen: %@", (e != nil ? e : @"kein Token")]]; return; }
-            [d setObject:t forKey:@"RfxQobuzToken"]; [d synchronize];
-            [self RunSearch:qs token:t];
-        }];
-    } else {
-        [self RunSearch:qs token:token];
+- (void)ButtonTapped:(UIButton *)b {
+    switch ([b tag]) {
+    case 0: [self removeFromSuperview]; break;
+    case 1: [self Connect]; break;
+    case 2: [self SignIn]; break;
+    case 3: [self SignOut]; break;
+    case 4: [self GoBack]; break;
     }
 }
 
-- (void)RunSearch:(NSString *)qs token:(NSString *)token {
-    NSDictionary *sp = [NSDictionary dictionaryWithObjectsAndKeys:qs, @"query", @"30", @"limit", nil];
-    [self GetJSON:@"track/search" params:sp token:token done:^(NSDictionary *j, NSString *e) {
-        if (e != nil) {
-            if ([e hasPrefix:@"HTTP 401"]) [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"RfxQobuzToken"];
-            [self ShowMessage:[NSString stringWithFormat:@"Suche fehlgeschlagen: %@", e]];
-            return;
-        }
-        [m_results removeAllObjects];
-        NSArray *items = [[j objectForKey:@"tracks"] objectForKey:@"items"];
-        for (NSDictionary *t in items) {
-            NSDictionary *alb = [t objectForKey:@"album"];
-            [m_results addObject:[NSDictionary dictionaryWithObjectsAndKeys:
-                [NSString stringWithFormat:@"%@", [t objectForKey:@"id"]], @"id",
-                ([t objectForKey:@"title"] ? [t objectForKey:@"title"] : @""), @"title",
-                ([[t objectForKey:@"performer"] objectForKey:@"name"] ? [[t objectForKey:@"performer"] objectForKey:@"name"] : @""), @"artist",
-                ([alb objectForKey:@"title"] ? [alb objectForKey:@"title"] : @""), @"album",
-                ([[alb objectForKey:@"image"] objectForKey:@"large"] ? [[alb objectForKey:@"image"] objectForKey:@"large"] : @""), @"cover",
-                [NSString stringWithFormat:@"%@", ([t objectForKey:@"duration"] ? [t objectForKey:@"duration"] : @0)], @"duration", nil]];
-        }
-        [m_log setHidden:YES]; [m_table setHidden:NO];
-        [m_table reloadData];
-        if ([m_results count] == 0) [self ShowMessage:@"Keine Treffer."];
+- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self Search]; return YES; }
+
+- (void)Connect {
+    NSString *a = [[m_addr text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([a length] == 0) { [self PickPlugin]; return; }
+    if (![a hasSuffix:@"/"]) a = [a stringByAppendingString:@"/"];
+    NSURL *u = [NSURL URLWithString:a];
+    if (u == nil) { [self Say:@"Ungültige Adresse."]; return; }
+    [[NSUserDefaults standardUserDefaults] setObject:[m_addr text] forKey:@"RfxBridgeURL"];
+    [m_host release];
+    m_host = [[RfxPluginHost alloc] initWithBase:u];
+    [self StartHost];
+}
+
+- (void)StartHost {
+    [self Say:@"Verbinde ..."];
+    [m_host initializeDone:^(NSString *e) {
+        if (e != nil) { [self Say:[NSString stringWithFormat:@"Verbindung fehlgeschlagen: %@", e]]; return; }
+        [self Say:[NSString stringWithFormat:@"Verbunden: %@", [m_host pluginName]]];
+        [self ShowAuthStatus];
+        if ([m_host has:@"browse"]) [self LoadRoot];
     }];
 }
 
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return (NSInteger)[m_results count]; }
+// plugins inside the app: rfxplugin-*.js in the app bundle and *.js in Documents/Plugins (Files app)
+- (void)PickPlugin {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *pdir = [docs stringByAppendingPathComponent:@"Plugins"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
+        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"]) [paths addObject:p];
+    for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pdir error:nil])
+        if ([[f pathExtension] caseInsensitiveCompare:@"js"] == NSOrderedSame) [paths addObject:[pdir stringByAppendingPathComponent:f]];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugin wählen"
+        message:@"Eigene Plugins (.js) kommen in den Ordner Plugins der App (Dateien-App)." preferredStyle:UIAlertControllerStyleAlert];
+    for (NSString *p in paths) {
+        NSString *name = [[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""];
+        [ac addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [self ConnectJS:p name:name]; }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
+    UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+    while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
+    [vc presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)ConnectJS:(NSString *)path name:(NSString *)name {
+    NSString *src = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (src == nil) { [self Say:@"Plugin-Datei nicht lesbar."]; return; }
+    NSString *err = nil;
+    RfxJSPlugin *js = [[RfxJSPlugin alloc] initWithScript:src pluginId:name error:&err];
+    if (js == nil) { [self Say:[NSString stringWithFormat:@"Plugin-Fehler: %@", err]]; return; }
+    [m_host release];
+    m_host = [[RfxPluginHost alloc] initWithJS:js];
+    [js release];
+    [self StartHost];
+}
+
+- (void)ShowAuthStatus {
+    if (![m_host has:@"auth"]) return;
+    [m_host call:@"auth.status" params:nil done:^(id r, NSString *e) {
+        if (e != nil) return;
+        NSString *st = [r objectForKey:@"state"];
+        NSString *acc = [[r objectForKey:@"account"] objectForKey:@"display_name"];
+        [self Say:[NSString stringWithFormat:@"%@ — %@%@", [m_host pluginName], st, (acc != nil ? [@" " stringByAppendingString:acc] : @"")]];
+    }];
+}
+
+- (void)SignIn {
+    if (m_host == nil || ![m_host has:@"auth"]) { [self Say:@"Erst verbinden (das Plugin braucht die Fähigkeit \"auth\")."]; return; }
+    [m_host call:@"auth.begin" params:nil done:^(id r, NSString *e) {
+        if (e != nil) { [self Alert:@"Anmeldung" msg:e]; return; }
+        NSString *url = [r objectForKey:@"url"];
+        NSString *ins = [r objectForKey:@"instructions"];
+        BOOL needInput = [[r objectForKey:@"expects_input"] boolValue];
+        if (url != nil) [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Anmeldung"
+            message:[NSString stringWithFormat:@"%@\n\nDie Seite wurde im Browser geöffnet. Füge hier den Code oder die Adresse ein, die du bekommst.%@",
+                     (ins != nil ? ins : @""), (needInput ? @"" : @"\n(Das Plugin schließt die Anmeldung evtl. selbst ab.)")]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"Code / Adresse"]; [t setAutocapitalizationType:UITextAutocapitalizationTypeNone]; [t setAutocorrectionType:UITextAutocorrectionTypeNo]; }];
+        [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"Senden" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            NSString *in = [[[ac textFields] objectAtIndex:0] text];
+            [m_host call:@"auth.complete" params:[NSDictionary dictionaryWithObject:(in != nil ? in : @"") forKey:@"input"] done:^(id r2, NSString *e2) {
+                if (e2 != nil) { [self Alert:@"Anmeldung fehlgeschlagen" msg:e2]; return; }
+                [self ShowAuthStatus];
+            }];
+        }]];
+        UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+        while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
+        [vc presentViewController:ac animated:YES completion:nil];
+    }];
+}
+
+- (void)SignOut {
+    if (m_host == nil || ![m_host has:@"auth"]) return;
+    [m_host call:@"auth.sign_out" params:nil done:^(id r, NSString *e) { [self ShowAuthStatus]; }];
+}
+
+- (void)SetItems:(NSArray *)items {
+    [m_items removeAllObjects];
+    [m_items addObjectsFromArray:items];
+    [m_table reloadData];
+}
+
+- (void)LoadRoot {
+    [m_host call:@"browse.root" params:nil done:^(id r, NSString *e) {
+        if (e != nil) { [self Say:[NSString stringWithFormat:@"Durchsuchen: %@", e]]; return; }
+        [m_back removeAllObjects];
+        [self SetItems:[r objectForKey:@"sections"]];
+    }];
+}
+
+- (void)Search {
+    NSString *q = [[m_query text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([q length] == 0 || m_host == nil) return;
+    if (![m_host has:@"search"]) { [self Say:@"Dieses Plugin hat keine Suche."]; return; }
+    [self Say:@"Suche ..."];
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:q, @"query", [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:40], @"limit", nil];
+    [m_host call:@"search" params:p done:^(id r, NSString *e) {
+        if (e != nil) { [self Say:[NSString stringWithFormat:@"Suche: %@", e]]; return; }
+        NSMutableArray *all = [NSMutableArray array];
+        for (NSDictionary *g in [r objectForKey:@"groups"]) [all addObjectsFromArray:[g objectForKey:@"items"]];
+        [m_back addObject:[NSDictionary dictionaryWithObject:[NSArray arrayWithArray:m_items] forKey:@"items"]];
+        [self SetItems:all];
+        [self Say:[NSString stringWithFormat:@"%lu Treffer", (unsigned long)[all count]]];
+    }];
+}
+
+- (void)GoBack {
+    if ([m_back count] == 0) return;
+    NSArray *prev = [[m_back lastObject] objectForKey:@"items"];
+    [m_back removeLastObject];
+    [self SetItems:prev];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return (NSInteger)[m_items count]; }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qb"];
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"src"];
     if (c == nil) {
-        c = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"qb"] autorelease];
+        c = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"src"] autorelease];
         [c setBackgroundColor:[UIColor clearColor]];
         [[c textLabel] setTextColor:[UIColor whiteColor]];
         [[c detailTextLabel] setTextColor:[UIColor colorWithWhite:0.65f alpha:1.0f]];
     }
-    NSDictionary *r = [m_results objectAtIndex:[ip row]];
-    int sec = [[r objectForKey:@"duration"] intValue];
-    [[c textLabel] setText:[r objectForKey:@"title"]];
-    [[c detailTextLabel] setText:[NSString stringWithFormat:@"%@ \u2014 %@  (%d:%02d)", [r objectForKey:@"artist"], [r objectForKey:@"album"], sec / 60, sec % 60]];
+    NSDictionary *it = [m_items objectAtIndex:[ip row]];
+    BOOL browsable = [[it objectForKey:@"browsable"] boolValue];
+    [[c textLabel] setText:[NSString stringWithFormat:@"%@%@", (browsable ? @"▸ " : @""), ([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")]];
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *k in [NSArray arrayWithObjects:@"artist", @"album", @"subtitle", nil]) {
+        id v = [it objectForKey:k];
+        if ([v isKindOfClass:[NSString class]] && [v length] > 0 && ![parts containsObject:v]) [parts addObject:v];
+    }
+    int ms = [[it objectForKey:@"duration_ms"] intValue];
+    NSString *d = (ms > 0) ? [NSString stringWithFormat:@"  (%d:%02d)", ms / 60000, (ms / 1000) % 60] : @"";
+    [[c detailTextLabel] setText:[[parts componentsJoinedByString:@" — "] stringByAppendingString:d]];
     return c;
 }
 
-// tapping a hit opens that track in the web player (playback happens there)
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    NSString *tid = [[m_results objectAtIndex:[ip row]] objectForKey:@"id"];
-    [m_web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"https://play.qobuz.com/track/%@", tid]]]];
-}
-
-- (void)Probe {
-    NSString *js =
-    @"(function(){var o={url:location.href,title:document.title};"
-    "try{var m=navigator.mediaSession&&navigator.mediaSession.metadata;o.mediaSession=m?{title:m.title,artist:m.artist,album:m.album,art:(m.artwork||[]).map(function(a){return a.src+' '+a.sizes;}),state:navigator.mediaSession.playbackState}:null;}catch(e){o.mediaSession='err '+e;}"
-    "o.media=[].slice.call(document.querySelectorAll('audio,video')).map(function(e){return {tag:e.tagName,src:(e.currentSrc||e.src||'').slice(0,80),t:e.currentTime,d:e.duration,paused:e.paused,ended:e.ended};});"
-    "o.inputs=[].slice.call(document.querySelectorAll('input')).slice(0,12).map(function(e){return {type:e.type,ph:e.placeholder,name:e.name,id:e.id,cls:(e.className||'').toString().slice(0,60)};});"
-    "o.buttons=[].slice.call(document.querySelectorAll('button,[role=button],a[href]')).slice(0,80).map(function(e){return [e.tagName,(e.getAttribute('aria-label')||e.title||e.innerText||'').trim().slice(0,40),e.getAttribute('data-testid')||'',(e.className||'').toString().slice(0,50),(e.getAttribute('href')||'').slice(0,50)].join(' | ');});"
-    "o.offlineHints=[].slice.call(document.querySelectorAll('*')).filter(function(e){return /offline|download/i.test((e.getAttribute('aria-label')||'')+(e.className||'')+(e.getAttribute('data-testid')||''));}).slice(0,20).map(function(e){return e.tagName+' '+(e.getAttribute('aria-label')||'')+' '+(e.className||'').toString().slice(0,50);});"
-    "return JSON.stringify(o,null,1);})()";
-    [m_web evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
-        NSString *txt = (error != nil) ? [NSString stringWithFormat:@"Fehler: %@", error] : [NSString stringWithFormat:@"%@", result];
-        [self ShowMessage:txt];
-        NSString *dir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-        [txt writeToFile:[dir stringByAppendingPathComponent:@"qobuz-probe.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSDictionary *it = [m_items objectAtIndex:[ip row]];
+    NSString *ref = [it objectForKey:@"ref"];
+    if (ref == nil) return;
+    if ([[it objectForKey:@"browsable"] boolValue]) {
+        NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:ref, @"ref", [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:200], @"limit", nil];
+        [self Say:@"Lade ..."];
+        [m_host call:@"browse.list" params:p done:^(id r, NSString *e) {
+            if (e != nil) { [self Say:[NSString stringWithFormat:@"Durchsuchen: %@", e]]; return; }
+            [m_back addObject:[NSDictionary dictionaryWithObject:[NSArray arrayWithArray:m_items] forKey:@"items"]];
+            [self SetItems:[r objectForKey:@"items"]];
+            [self Say:[it objectForKey:@"title"]];
+        }];
+        return;
+    }
+    if (![m_host has:@"resolve"]) return;
+    [self Say:@"Hole Stream-Adresse ..."];
+    [m_host call:@"track.resolve" params:[NSDictionary dictionaryWithObjectsAndKeys:ref, @"ref", @"play", @"purpose", nil] done:^(id r, NSString *e) {
+        if (e != nil) { [self Say:[NSString stringWithFormat:@"Wiedergabe: %@", e]]; return; }
+        NSDictionary *f = [r objectForKey:@"format"];
+        NSString *fs = [NSString stringWithFormat:@"%@ %@ Hz / %@ Bit", ([f objectForKey:@"codec"] ? [f objectForKey:@"codec"] : @"?"),
+                        ([f objectForKey:@"sample_rate"] ? [f objectForKey:@"sample_rate"] : @"?"), ([f objectForKey:@"bits"] ? [f objectForKey:@"bits"] : @"?")];
+        // step 2 (playback through the engine) follows; for now only report what the plugin resolved
+        [self Say:[NSString stringWithFormat:@"Aufgelöst: %@ (%@). Wiedergabe über die Engine folgt im nächsten Schritt.", [it objectForKey:@"title"], fs]];
     }];
 }
 
@@ -626,9 +875,9 @@
     {
         UIButton *qb = [UIButton buttonWithType:UIButtonTypeSystem];
         [qb setFrame:CGRectMake(cx - rowW * 0.5f, y + 60.0f, rowW, 44.0f)];
-        [qb setTitle:@"Qobuz-Web-Player öffnen (Test)" forState:UIControlStateNormal];
+        [qb setTitle:@"Quellen (Plugins) öffnen" forState:UIControlStateNormal];
         [[qb titleLabel] setFont:[UIFont systemFontOfSize:19.0f]];
-        [qb addTarget:self action:@selector(OpenQobuzPanel) forControlEvents:UIControlEventTouchUpInside];
+        [qb addTarget:self action:@selector(OpenSourcesPanel) forControlEvents:UIControlEventTouchUpInside];
         [ov addSubview:qb];
     }
     UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -685,9 +934,9 @@
     [m_glv RefreshCoverTextures];
 }
 
-- (void)OpenQobuzPanel {
+- (void)OpenSourcesPanel {
     if ([self viewWithTag:7770] != nil) return;
-    RfxQobuzPanel *p = [[RfxQobuzPanel alloc] initWithFrame:[self bounds]];
+    RfxSourcesPanel *p = [[RfxSourcesPanel alloc] initWithFrame:[self bounds]];
     [p setTag:7770];
     [self addSubview:p];
     [p release];
