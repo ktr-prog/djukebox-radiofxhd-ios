@@ -344,6 +344,7 @@ static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
     BOOL m_busy;
     int m_total, m_doneCount;
     BOOL m_queueLast;
+    BOOL m_warned;
 }
 @end
 
@@ -360,6 +361,7 @@ static RfxPluginManager *gRfxPM = nil;
     if (self) { m_hosts = [[NSMutableDictionary alloc] init]; m_loading = [[NSMutableSet alloc] init]; m_queue = [[NSMutableArray alloc] init]; }
     return self;
 }
++ (void)Toast:(NSString *)t { RfxToast(t); }
 - (void)setKiosk:(KioskView *)kv { m_kv = kv; }
 
 - (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
@@ -423,6 +425,10 @@ static RfxPluginManager *gRfxPM = nil;
     void (^done)(NSString *, NSArray *) = [[m_pendDone retain] autorelease];
     NSMutableArray *hosts = [NSMutableArray array];
     for (NSString *n in m_hosts) if ([[m_hosts objectForKey:n] has:@"search"]) [hosts addObject:n];
+    if ([hosts count] == 0 && [text length] > 1 && !m_warned) {
+        m_warned = YES;
+        RfxToast([[RfxPluginPaths() allKeys] count] ? @"Kein Plugin geladen: Quellen > Autostart wählen." : @"Keine Plugins gefunden.");
+    }
     if ([hosts count] == 0 || [text length] == 0 || done == nil) return;
     __block int waiting = (int)[hosts count];
     NSMutableArray *all = [NSMutableArray array];
@@ -442,7 +448,8 @@ static RfxPluginManager *gRfxPM = nil;
                     }
                 }
             }
-            if (--waiting == 0) [self BuildClips:all text:text done:done];
+            if (e != nil) RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]);
+            if (--waiting == 0) { if ([all count] == 0) RfxToast(@"Plugin-Suche: keine Treffer."); [self BuildClips:all text:text done:done]; }
         }];
     }
 }
@@ -1973,7 +1980,7 @@ static void RemoveClipViews(ClipObject *c) {
 
 - (void)AddClip:(ClipObject *)clip atIndex:(int)indexArg fromDragging:(BOOL)dragging withsendqueue:(BOOL)sendqueue
   withaddanyway:(BOOL)addanyway sendremotedelayed:(BOOL)sendremotedelayed {
-    if (m_loadingscreen != nil) return;
+    if (m_loadingscreen != nil) { RfxToast(@"Ladebildschirm aktiv – Titel nicht eingereiht."); return; }
     int count = (int)[[self m_clips] count];
     int flags = [m_sve StateFlags];
     int insertAt = (indexArg < 0) ? count : indexArg;
@@ -1983,6 +1990,7 @@ static void RemoveClipViews(ClipObject *c) {
         for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
             ClipObject *other = [[self m_clips] rfx_objectAtIndex:i];
             if ([other ID] == [clip ID] && [clip m_serverid] == [other m_serverid] && [other m_ipodid] == [clip m_ipodid]) {
+                RfxToast(@"Dieser Titel ist schon in der Warteschlange.");
                 [other retain];
                 [m_glv setM_preventdragging:CACurrentMediaTime()];
                 [self StartNotAcceptedAni:clip withqueuecd:other];

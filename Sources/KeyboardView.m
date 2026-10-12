@@ -1158,11 +1158,14 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     }
     double now = CACurrentMediaTime();
     if ((now - [m_pkiosk m_lastsongdragged]) < (double)[[m_pkiosk m_sve] m_songdragdelay]) {
+        [RfxPluginManager Toast:@"Zu schnell hintereinander (Drag-Verzögerung)."];
         [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:2]];
         return;
     }
     ClipObject *added = nil;
-    if ([co m_folderid] == -44 || [co m_folderid] == -66 || [[NSFileManager defaultManager] fileExistsAtPath:[co m_filepath]]) {
+    if (!([co m_folderid] == -44 || [co m_folderid] == -66 || ([co m_filepath] != nil && [[NSFileManager defaultManager] fileExistsAtPath:[co m_filepath]])))
+        [RfxPluginManager Toast:[NSString stringWithFormat:@"Datei nicht gefunden: %@", [co m_filepath] ? [[co m_filepath] lastPathComponent] : @"(kein Pfad)"]];
+    if ([co m_folderid] == -44 || [co m_folderid] == -66 || ([co m_filepath] != nil && [[NSFileManager defaultManager] fileExistsAtPath:[co m_filepath]])) {
         [m_pkiosk setM_autoselected:NO];
         ClipObject *n = [[ClipObject alloc] init];
         [m_pkiosk CopyPropertiesFromObject:co toObject:n];

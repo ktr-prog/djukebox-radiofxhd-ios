@@ -324,6 +324,7 @@
 @class ClipObject;
 @interface RfxPluginManager : NSObject
 + (RfxPluginManager *)shared;
++ (void)Toast:(NSString *)t;
 - (void)setKiosk:(KioskView *)kv;
 - (void)StartAutoload;
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *text, NSArray *clips))done;
