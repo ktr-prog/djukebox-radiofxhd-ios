@@ -19,6 +19,7 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
+#import <WebKit/WebKit.h>
 
 // Fast switching / queue dragging can touch the queue while it is changing; an out-of-range index must not
 // take the whole app down.  These behave like the NSMutableArray methods but ignore a bad index.
@@ -53,6 +54,239 @@
 #define ISIPAD ([DEL m_isipad])
 #define THUMB (ISIPAD ? 0x52 : 0x38)
 #define BARH (ISIPAD ? 0x7e : 0x5a)
+
+
+#pragma mark - Qobuz web player panel (dev menu, step 1: sign in + probe)
+
+// Hosts the official Qobuz web player in a WKWebView (persistent cookies, so the premium login is kept) and can dump
+// what the page exposes (media session, <audio>/<video> state, buttons) into a text view and into
+// Documents/qobuz-probe.txt.  That report is the basis for the later skin / search bridge.
+@interface RfxQobuzPanel : UIView <WKNavigationDelegate, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate> {
+    WKWebView *m_web;
+    UITextView *m_log;
+    UITableView *m_table;
+    UITextField *m_query;
+    NSMutableArray *m_results;      // NSDictionary: id, title, artist, album, cover, duration
+}
+- (void)Probe;
+@end
+
+@implementation RfxQobuzPanel
+
+- (id)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    m_results = [[NSMutableArray alloc] init];
+    [self setBackgroundColor:[UIColor blackColor]];
+    [self setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    WKWebViewConfiguration *cfg = [[[WKWebViewConfiguration alloc] init] autorelease];
+    [cfg setAllowsInlineMediaPlayback:YES];
+    [cfg setMediaTypesRequiringUserActionForPlayback:WKAudiovisualMediaTypeNone];
+    [cfg setWebsiteDataStore:[WKWebsiteDataStore defaultDataStore]];
+    float bar = 56.0f, srow = 48.0f, top = bar + srow;
+    m_web = [[WKWebView alloc] initWithFrame:CGRectMake(0, top, frame.size.width, frame.size.height * 0.60f - top) configuration:cfg];
+    [m_web setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    [m_web setNavigationDelegate:self];
+    [self addSubview:m_web]; [m_web release];
+    CGRect lower = CGRectMake(0, frame.size.height * 0.60f, frame.size.width, frame.size.height * 0.40f);
+    m_table = [[UITableView alloc] initWithFrame:lower style:UITableViewStylePlain];
+    [m_table setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin];
+    [m_table setBackgroundColor:[UIColor colorWithWhite:0.08f alpha:1.0f]];
+    [m_table setDataSource:self]; [m_table setDelegate:self];
+    [self addSubview:m_table]; [m_table release];
+    m_log = [[UITextView alloc] initWithFrame:lower];
+    [m_log setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin];
+    [m_log setBackgroundColor:[UIColor colorWithWhite:0.08f alpha:1.0f]];
+    [m_log setTextColor:[UIColor colorWithWhite:0.85f alpha:1.0f]];
+    [m_log setFont:[UIFont fontWithName:@"Courier" size:12.0f]];
+    [m_log setEditable:NO];
+    [m_log setHidden:YES];
+    [self addSubview:m_log]; [m_log release];
+    NSArray *titles = [NSArray arrayWithObjects:@"Schließen", @"Konto", @"Protokoll", @"Neu laden", nil];
+    for (int i = 0; i < 4; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        [b setFrame:CGRectMake(12.0f + i * 130.0f, 8.0f, 120.0f, 40.0f)];
+        [b setTitle:[titles objectAtIndex:i] forState:UIControlStateNormal];
+        [b setTag:i];
+        [b addTarget:self action:@selector(ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:b];
+    }
+    m_query = [[UITextField alloc] initWithFrame:CGRectMake(12.0f, bar + 4.0f, frame.size.width - 150.0f, 38.0f)];
+    [m_query setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
+    [m_query setBorderStyle:UITextBorderStyleRoundedRect];
+    [m_query setPlaceholder:@"Qobuz durchsuchen (Titel, Interpret)"];
+    [m_query setReturnKeyType:UIReturnKeySearch];
+    [m_query setDelegate:self];
+    [self addSubview:m_query]; [m_query release];
+    UIButton *sb = [UIButton buttonWithType:UIButtonTypeSystem];
+    [sb setFrame:CGRectMake(frame.size.width - 130.0f, bar + 4.0f, 118.0f, 38.0f)];
+    [sb setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin];
+    [sb setTitle:@"Suchen" forState:UIControlStateNormal];
+    [sb setTag:10];
+    [sb addTarget:self action:@selector(ButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:sb];
+    NSURL *u = [NSURL URLWithString:@"https://play.qobuz.com/"];
+    [m_web loadRequest:[NSURLRequest requestWithURL:u]];
+    return self;
+}
+
+- (void)dealloc { [m_results release]; [super dealloc]; }
+
+- (void)ButtonTapped:(UIButton *)b {
+    switch ([b tag]) {
+    case 0: [m_web stopLoading]; [self removeFromSuperview]; break;
+    case 1: [self AskAccount]; break;
+    case 2: [self Probe]; break;
+    case 3: [m_web reload]; break;
+    case 10: [self Search]; break;
+    }
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self Search]; return YES; }
+
+#pragma mark account + search (metadata only; nothing is downloaded or stored)
+
+- (void)AskAccount {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Qobuz-Konto"
+        message:@"App-ID (von Qobuz), E-Mail und Passwort deines Premium-Kontos. Wird nur auf diesem Gerät gespeichert."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"App-ID"]; [t setText:[d stringForKey:@"RfxQobuzAppID"]]; }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"E-Mail"]; [t setText:[d stringForKey:@"RfxQobuzEmail"]]; [t setKeyboardType:UIKeyboardTypeEmailAddress]; [t setAutocapitalizationType:UITextAutocapitalizationTypeNone]; }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"Passwort"]; [t setText:[d stringForKey:@"RfxQobuzPass"]]; [t setSecureTextEntry:YES]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Speichern" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        NSArray *f = [ac textFields];
+        [d setObject:[[f objectAtIndex:0] text] forKey:@"RfxQobuzAppID"];
+        [d setObject:[[f objectAtIndex:1] text] forKey:@"RfxQobuzEmail"];
+        [d setObject:[[f objectAtIndex:2] text] forKey:@"RfxQobuzPass"];
+        [d removeObjectForKey:@"RfxQobuzToken"];
+        [d synchronize];
+    }]];
+    UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+    while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
+    [vc presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)ShowMessage:(NSString *)msg {
+    [m_log setText:msg]; [m_log setHidden:NO]; [m_table setHidden:YES];
+}
+
+- (void)GetJSON:(NSString *)path params:(NSDictionary *)p token:(NSString *)token done:(void (^)(NSDictionary *, NSString *))done {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSMutableString *q = [NSMutableString stringWithFormat:@"https://www.qobuz.com/api.json/0.2/%@?app_id=%@", path,
+        [[d stringForKey:@"RfxQobuzAppID"] stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]]];
+    NSMutableCharacterSet *ok = [[[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy] autorelease];
+    [ok removeCharactersInString:@"&=+?#"];
+    for (NSString *k in p) [q appendFormat:@"&%@=%@", k, [[p objectForKey:k] stringByAddingPercentEncodingWithAllowedCharacters:ok]];
+    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:q]];
+    if (token != nil) [r setValue:token forHTTPHeaderField:@"X-User-Auth-Token"];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSDictionary *j = nil; NSString *e = nil;
+        NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
+        if (err != nil) e = [err localizedDescription];
+        else {
+            id o = (data != nil) ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            if ([o isKindOfClass:[NSDictionary class]]) j = o;
+            if (code != 200) e = [NSString stringWithFormat:@"HTTP %ld %@", (long)code, (j != nil ? [j objectForKey:@"message"] : @"")];
+            else if (j == nil) e = @"Unlesbare Antwort";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ done(j, e); });
+    }] resume];
+}
+
+- (void)Search {
+    NSString *qs = [[m_query text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([qs length] == 0) return;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if ([[d stringForKey:@"RfxQobuzAppID"] length] == 0 || [[d stringForKey:@"RfxQobuzEmail"] length] == 0) {
+        [self ShowMessage:@"Bitte zuerst über \"Konto\" App-ID, E-Mail und Passwort eintragen."];
+        return;
+    }
+    [self ShowMessage:@"Suche ..."];
+    NSString *token = [d stringForKey:@"RfxQobuzToken"];
+    if (token == nil) {
+        NSDictionary *lp = [NSDictionary dictionaryWithObjectsAndKeys:[d stringForKey:@"RfxQobuzEmail"], @"email",
+                            ([d stringForKey:@"RfxQobuzPass"] != nil ? [d stringForKey:@"RfxQobuzPass"] : @""), @"password", nil];
+        [self GetJSON:@"user/login" params:lp token:nil done:^(NSDictionary *j, NSString *e) {
+            NSString *t = [j objectForKey:@"user_auth_token"];
+            if (e != nil || t == nil) { [self ShowMessage:[NSString stringWithFormat:@"Anmeldung fehlgeschlagen: %@", (e != nil ? e : @"kein Token")]]; return; }
+            [d setObject:t forKey:@"RfxQobuzToken"]; [d synchronize];
+            [self RunSearch:qs token:t];
+        }];
+    } else {
+        [self RunSearch:qs token:token];
+    }
+}
+
+- (void)RunSearch:(NSString *)qs token:(NSString *)token {
+    NSDictionary *sp = [NSDictionary dictionaryWithObjectsAndKeys:qs, @"query", @"30", @"limit", nil];
+    [self GetJSON:@"track/search" params:sp token:token done:^(NSDictionary *j, NSString *e) {
+        if (e != nil) {
+            if ([e hasPrefix:@"HTTP 401"]) [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"RfxQobuzToken"];
+            [self ShowMessage:[NSString stringWithFormat:@"Suche fehlgeschlagen: %@", e]];
+            return;
+        }
+        [m_results removeAllObjects];
+        NSArray *items = [[j objectForKey:@"tracks"] objectForKey:@"items"];
+        for (NSDictionary *t in items) {
+            NSDictionary *alb = [t objectForKey:@"album"];
+            [m_results addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                [NSString stringWithFormat:@"%@", [t objectForKey:@"id"]], @"id",
+                ([t objectForKey:@"title"] ? [t objectForKey:@"title"] : @""), @"title",
+                ([[t objectForKey:@"performer"] objectForKey:@"name"] ? [[t objectForKey:@"performer"] objectForKey:@"name"] : @""), @"artist",
+                ([alb objectForKey:@"title"] ? [alb objectForKey:@"title"] : @""), @"album",
+                ([[alb objectForKey:@"image"] objectForKey:@"large"] ? [[alb objectForKey:@"image"] objectForKey:@"large"] : @""), @"cover",
+                [NSString stringWithFormat:@"%@", ([t objectForKey:@"duration"] ? [t objectForKey:@"duration"] : @0)], @"duration", nil]];
+        }
+        [m_log setHidden:YES]; [m_table setHidden:NO];
+        [m_table reloadData];
+        if ([m_results count] == 0) [self ShowMessage:@"Keine Treffer."];
+    }];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return (NSInteger)[m_results count]; }
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qb"];
+    if (c == nil) {
+        c = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"qb"] autorelease];
+        [c setBackgroundColor:[UIColor clearColor]];
+        [[c textLabel] setTextColor:[UIColor whiteColor]];
+        [[c detailTextLabel] setTextColor:[UIColor colorWithWhite:0.65f alpha:1.0f]];
+    }
+    NSDictionary *r = [m_results objectAtIndex:[ip row]];
+    int sec = [[r objectForKey:@"duration"] intValue];
+    [[c textLabel] setText:[r objectForKey:@"title"]];
+    [[c detailTextLabel] setText:[NSString stringWithFormat:@"%@ \u2014 %@  (%d:%02d)", [r objectForKey:@"artist"], [r objectForKey:@"album"], sec / 60, sec % 60]];
+    return c;
+}
+
+// tapping a hit opens that track in the web player (playback happens there)
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    NSString *tid = [[m_results objectAtIndex:[ip row]] objectForKey:@"id"];
+    [m_web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"https://play.qobuz.com/track/%@", tid]]]];
+}
+
+- (void)Probe {
+    NSString *js =
+    @"(function(){var o={url:location.href,title:document.title};"
+    "try{var m=navigator.mediaSession&&navigator.mediaSession.metadata;o.mediaSession=m?{title:m.title,artist:m.artist,album:m.album,art:(m.artwork||[]).map(function(a){return a.src+' '+a.sizes;}),state:navigator.mediaSession.playbackState}:null;}catch(e){o.mediaSession='err '+e;}"
+    "o.media=[].slice.call(document.querySelectorAll('audio,video')).map(function(e){return {tag:e.tagName,src:(e.currentSrc||e.src||'').slice(0,80),t:e.currentTime,d:e.duration,paused:e.paused,ended:e.ended};});"
+    "o.inputs=[].slice.call(document.querySelectorAll('input')).slice(0,12).map(function(e){return {type:e.type,ph:e.placeholder,name:e.name,id:e.id,cls:(e.className||'').toString().slice(0,60)};});"
+    "o.buttons=[].slice.call(document.querySelectorAll('button,[role=button],a[href]')).slice(0,80).map(function(e){return [e.tagName,(e.getAttribute('aria-label')||e.title||e.innerText||'').trim().slice(0,40),e.getAttribute('data-testid')||'',(e.className||'').toString().slice(0,50),(e.getAttribute('href')||'').slice(0,50)].join(' | ');});"
+    "o.offlineHints=[].slice.call(document.querySelectorAll('*')).filter(function(e){return /offline|download/i.test((e.getAttribute('aria-label')||'')+(e.className||'')+(e.getAttribute('data-testid')||''));}).slice(0,20).map(function(e){return e.tagName+' '+(e.getAttribute('aria-label')||'')+' '+(e.className||'').toString().slice(0,50);});"
+    "return JSON.stringify(o,null,1);})()";
+    [m_web evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+        NSString *txt = (error != nil) ? [NSString stringWithFormat:@"Fehler: %@", error] : [NSString stringWithFormat:@"%@", result];
+        [self ShowMessage:txt];
+        NSString *dir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+        [txt writeToFile:[dir stringByAppendingPathComponent:@"qobuz-probe.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }];
+}
+
+@end
 
 @implementation KioskView
 @synthesize m_lastsongdragged, m_tenmintimer, m_lastshownNoCoverFor, m_didstopmanual, m_resetfadeover;
@@ -389,6 +623,14 @@
     [info setTextColor:[UIColor colorWithWhite:0.8f alpha:1.0f]]; [info setBackgroundColor:[UIColor clearColor]];
     [info setFont:[UIFont fontWithName:@"Courier" size:14.0f]]; [info setNumberOfLines:2];
     [ov addSubview:info]; [info release];
+    {
+        UIButton *qb = [UIButton buttonWithType:UIButtonTypeSystem];
+        [qb setFrame:CGRectMake(cx - rowW * 0.5f, y + 60.0f, rowW, 44.0f)];
+        [qb setTitle:@"Qobuz-Web-Player öffnen (Test)" forState:UIControlStateNormal];
+        [[qb titleLabel] setFont:[UIFont systemFontOfSize:19.0f]];
+        [qb addTarget:self action:@selector(OpenQobuzPanel) forControlEvents:UIControlEventTouchUpInside];
+        [ov addSubview:qb];
+    }
     UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
     [x setFrame:CGRectMake(b.size.width - 70.0f, 20.0f, 50.0f, 50.0f)];
     [x setTitle:@"\u2715" forState:UIControlStateNormal];
@@ -441,6 +683,14 @@
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     [d setFloat:[sl value] forKey:@"RfxDevCoverBorderWidth"]; [d synchronize];
     [m_glv RefreshCoverTextures];
+}
+
+- (void)OpenQobuzPanel {
+    if ([self viewWithTag:7770] != nil) return;
+    RfxQobuzPanel *p = [[RfxQobuzPanel alloc] initWithFrame:[self bounds]];
+    [p setTag:7770];
+    [self addSubview:p];
+    [p release];
 }
 
 - (void)CloseDevMenu {
