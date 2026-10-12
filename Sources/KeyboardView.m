@@ -453,6 +453,11 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         [m_srtableview setDelegate:self];
         [m_srtableview setDataSource:self];
         [m_srtableview setAllowsSelection:NO];
+        // port: taps are resolved from the touch position (row + column), not from the cell subviews
+        UITapGestureRecognizer *srtap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(SRTapped:)];
+        [srtap setCancelsTouchesInView:NO];
+        [m_srtableview addGestureRecognizer:srtap];
+        [srtap release];
         [m_srtableview setSeparatorStyle:UITableViewCellSeparatorStyleNone];
         [m_srtableview setBackgroundColor:darkgray];
 
@@ -585,6 +590,27 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     return [self getNumberOfRowsInSection:(int)section];
 }
 
+- (void)SRTapped:(UITapGestureRecognizer *)g {
+    if ([g state] != UIGestureRecognizerStateEnded) return;
+    CGPoint p = [g locationInView:m_srtableview];
+    NSIndexPath *ip = [m_srtableview indexPathForRowAtPoint:p];
+    if (ip == nil) return;
+    int section = (int)[ip section];
+    NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
+    [m_srlock lock];
+    int count = (int)[src count];
+    [m_srlock unlock];
+    int rows = 0, cols = 0;
+    [self GetTableMatrix:count withitemsincolum:&rows withcolumcount:&cols];
+    if (cols < 1) return;
+    int colw = (int)([m_srtableview frame].size.width / (float)cols);
+    int col = (colw > 0) ? (int)(p.x / (float)colw) : 0;
+    if (col >= cols) col = cols - 1;
+    int idx = (int)[ip row] + rows * col;
+    if (idx < 0 || idx >= count) return;
+    [self AddItemFromSearchList:idx withsection:section withdirectClipObject:nil];
+}
+
 - (void)SRPictureThread:(NSNumber *)sRPictureThread {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     long long folderid = [[m_pkiosk m_glv] m_selectedfolderid];
@@ -693,7 +719,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             [img setTag:c + 100];
             [img setM_section:section];
             [img setBackgroundColor:clear];
-            [img setUserInteractionEnabled:YES];
+            [img setUserInteractionEnabled:NO];
             [img setContentMode:UIViewContentModeScaleAspectFit];
             [img SetKBPointer:self];
 
@@ -708,7 +734,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             [l1 setFont:[UIFont boldSystemFontOfSize:(pad ? 18.0f : 12.0f)]];
             [l1 setTextColor:[UIColor whiteColor]];
             [l1 setBackgroundColor:clear];
-            [l1 setUserInteractionEnabled:YES];
+            [l1 setUserInteractionEnabled:NO];
             [l1 SetKBPointer:self];
             if (!pad) [l1 setNumberOfLines:2];
 
@@ -721,7 +747,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             [l2 setFont:[UIFont systemFontOfSize:(pad ? 12.0f : 10.0f)]];
             [l2 setTextColor:light];
             [l2 setBackgroundColor:clear];
-            [l2 setUserInteractionEnabled:YES];
+            [l2 setUserInteractionEnabled:NO];
             [l2 SetKBPointer:self];
             [cell bringSubviewToFront:l1];
         }
