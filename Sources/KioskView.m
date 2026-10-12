@@ -300,25 +300,31 @@ static NSString *RfxSafeName(NSString *s) {
 
 static void RfxToast(NSString *t) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[Toast] %@", t);
+        // topmost window that exists (keyWindow can be nil), label sits above everything in it
         UIWindow *w = [[UIApplication sharedApplication] keyWindow];
+        if (w == nil) w = [[[UIApplication sharedApplication] windows] lastObject];
         if (w == nil) return;
         UILabel *l = (UILabel *)[w viewWithTag:7771];
         if (l == nil) {
             l = [[[UILabel alloc] init] autorelease];
             [l setTag:7771];
             [l setTextAlignment:NSTextAlignmentCenter];
-            [l setFont:[UIFont systemFontOfSize:15.0f]];
+            [l setNumberOfLines:2];
+            [l setFont:[UIFont boldSystemFontOfSize:16.0f]];
             [l setTextColor:[UIColor whiteColor]];
-            [l setBackgroundColor:[UIColor colorWithWhite:0.1f alpha:0.9f]];
+            [l setBackgroundColor:[UIColor colorWithRed:0.75f green:0.1f blue:0.1f alpha:0.95f]];
             [[l layer] setCornerRadius:8.0f];
             [l setClipsToBounds:YES];
             [l setUserInteractionEnabled:NO];
+            [[l layer] setZPosition:100000.0f];
             [w addSubview:l];
         }
-        [l setFrame:CGRectMake(40.0f, [w bounds].size.height - 90.0f, [w bounds].size.width - 80.0f, 40.0f)];
+        CGRect wb = [w bounds];
+        [l setFrame:CGRectMake(40.0f, wb.size.height * 0.5f - 25.0f, wb.size.width - 80.0f, 50.0f)];
         [l setText:t];
         [w bringSubviewToFront:l];
-        [l.layer removeAllAnimations];
+        [[l layer] removeAllAnimations];
         [l setAlpha:1.0f];
         [UIView animateWithDuration:0.6 delay:4.0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ [l setAlpha:0.0f]; } completion:nil];
     });
@@ -366,13 +372,21 @@ static RfxPluginManager *gRfxPM = nil;
 
 - (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
 
-- (BOOL)IsAutostart:(NSString *)name {
-    return [[[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"] containsObject:name];
+// never configured: the plugins shipped inside the app (public sources, no sign-in) are on
+- (NSArray *)AutostartList {
+    NSArray *a = [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"];
+    if (a != nil) return a;
+    NSMutableArray *d = [NSMutableArray array];
+    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
+        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"])
+            [d addObject:[[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""]];
+    return d;
 }
+- (BOOL)IsAutostart:(NSString *)name { return [[self AutostartList] containsObject:name]; }
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
 
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name {
-    NSMutableArray *a = [NSMutableArray arrayWithArray:[[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"]];
+    NSMutableArray *a = [NSMutableArray arrayWithArray:[self AutostartList]];
     [a removeObject:name];
     if (on) [a addObject:name];
     [[NSUserDefaults standardUserDefaults] setObject:a forKey:@"RfxPluginAutostart"];
@@ -382,7 +396,7 @@ static RfxPluginManager *gRfxPM = nil;
 }
 
 - (void)StartAutoload {
-    for (NSString *n in [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"]) [self Load:n done:nil];
+    for (NSString *n in [self AutostartList]) [self Load:n done:nil];
 }
 
 - (void)Load:(NSString *)name done:(void (^)(RfxPluginHost *))done {

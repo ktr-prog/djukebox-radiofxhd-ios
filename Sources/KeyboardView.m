@@ -1146,6 +1146,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 
 - (void)AddItemFromSearchList:(int)itemFromSearchList withsection:(int)section withdirectClipObject:(id)directClipObject {
     ClipObject *co = directClipObject;
+    if (directClipObject == nil) [RfxPluginManager Toast:[NSString stringWithFormat:@"Tipp: Eintrag %d, Liste %d (%d / %d Einträge)", itemFromSearchList, section, (int)[m_srarray count], (int)[m_srarrayother count]]];
     if (co == nil) {
         if (itemFromSearchList < 0) return;
         NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
