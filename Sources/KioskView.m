@@ -20,6 +20,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
 #import <JavaScriptCore/JavaScriptCore.h>
+#import <CommonCrypto/CommonDigest.h>
 
 // Fast switching / queue dragging can touch the queue while it is changing; an out-of-range index must not
 // take the whole app down.  These behave like the NSMutableArray methods but ignore a bad index.
@@ -62,6 +63,35 @@
 // user's network behind Tools/rfx-plugin-bridge.py.  The host is neutral: it knows no service, ships no plugin and
 // holds no credentials; sign-in goes through the plugin's auth.begin / auth.complete (the user opens the address in
 // the browser and pastes back what the plugin asks for).
+
+#pragma mark - plugin cache (files that plugins resolved are loaded here and played through the audio engine)
+
+static NSString *RfxPluginCacheDir(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    return [docs stringByAppendingPathComponent:@"PluginCache"];
+}
+
+static BOOL RfxPluginKeepCache(void) {
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxPluginKeepCache"];
+    return (v == nil) ? YES : [v boolValue];
+}
+
+// "temporary" mode: everything loaded in an earlier run is removed when the app starts again
+static void RfxCleanPluginCache(void) {
+    if (!RfxPluginKeepCache()) [[NSFileManager defaultManager] removeItemAtPath:RfxPluginCacheDir() error:nil];
+}
+
+static unsigned long long RfxHash64(NSString *s, NSString **hex) {
+    unsigned char d[CC_SHA256_DIGEST_LENGTH];
+    NSData *data = [s dataUsingEncoding:NSUTF8StringEncoding];
+    CC_SHA256([data bytes], (CC_LONG)[data length], d);
+    unsigned long long v = 0;
+    NSMutableString *h = [NSMutableString string];
+    for (int i = 0; i < 16; i++) { [h appendFormat:@"%02x", d[i]]; if (i < 8) v = (v << 8) | d[i]; }
+    if (hex != NULL) *hex = h;
+    return v;
+}
+
 // A source plugin written in JavaScript, running inside the app (JavaScriptCore).  The script defines
 // handle(method, params) -> Promise and speaks the ricercar plugin protocol 1 method names.  It gets fetchText(url, opts),
 // hostLog(text), hostOpen(url) and hostGet/hostSet(key[, value]) (small per-plugin storage).
@@ -186,7 +216,9 @@
     int m_nextid;
     NSDictionary *m_caps;
     NSString *m_pluginName;
+    NSString *m_pluginId;
 }
+@property (nonatomic, retain) NSString *pluginId;
 @property (nonatomic, retain) NSDictionary *caps;
 @property (nonatomic, retain) NSString *pluginName;
 - (id)initWithBase:(NSURL *)base;
@@ -197,7 +229,7 @@
 @end
 
 @implementation RfxPluginHost
-@synthesize caps = m_caps, pluginName = m_pluginName;
+@synthesize caps = m_caps, pluginName = m_pluginName, pluginId = m_pluginId;
 
 - (id)initWithBase:(NSURL *)base {
     self = [super init];
@@ -209,7 +241,7 @@
     if (self) { m_js = [js retain]; m_nextid = 1; }
     return self;
 }
-- (void)dealloc { [m_base release]; [m_js release]; [m_caps release]; [m_pluginName release]; [super dealloc]; }
+- (void)dealloc { [m_base release]; [m_js release]; [m_caps release]; [m_pluginName release]; [m_pluginId release]; [super dealloc]; }
 
 - (BOOL)has:(NSString *)cap { return [[m_caps objectForKey:cap] boolValue]; }
 
@@ -249,6 +281,7 @@
         if (e != nil) { done(e); return; }
         [self setCaps:[result objectForKey:@"capabilities"]];
         [self setPluginName:[[result objectForKey:@"plugin"] objectForKey:@"name"]];
+        [self setPluginId:[[result objectForKey:@"plugin"] objectForKey:@"id"]];
         done(nil);
     }];
 }
@@ -261,6 +294,9 @@
     UITableView *m_table;
     NSMutableArray *m_items;
     NSMutableArray *m_back;        // stack of NSDictionary {title, items}
+    NSURLSessionDownloadTask *m_dltask;
+    NSTimer *m_dltimer;
+    UIButton *m_cachebtn;
 }
 @end
 
@@ -289,6 +325,8 @@
     [self Btn:@"Anmelden" x:252 y:y w:110 tag:2];
     [self Btn:@"Abmelden" x:372 y:y w:110 tag:3];
     [self Btn:@"Zurück" x:492 y:y w:90 tag:4];
+    m_cachebtn = [self Btn:@"" x:592 y:y w:190 tag:5];
+    [self UpdateCacheButton];
     y += 50.0f;
     m_addr = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
     [m_addr setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
@@ -324,7 +362,16 @@
     return self;
 }
 
-- (void)dealloc { [m_host release]; [m_items release]; [m_back release]; [super dealloc]; }
+- (void)dealloc {
+    [m_dltimer invalidate];
+    [m_dltask cancel];
+    [m_host release]; [m_items release]; [m_back release];
+    [super dealloc];
+}
+
+- (void)UpdateCacheButton {
+    [m_cachebtn setTitle:@"Import: Bibliothek" forState:UIControlStateNormal];
+}
 
 - (void)Say:(NSString *)t { [m_status setText:t]; }
 
@@ -343,6 +390,9 @@
     case 2: [self SignIn]; break;
     case 3: [self SignOut]; break;
     case 4: [self GoBack]; break;
+    case 5:
+        [self Say:@"Geladene Titel werden wie ein Import in die Bibliothek (Radio.db) übernommen."];
+        break;
     }
 }
 
@@ -527,12 +577,95 @@
     [self Say:@"Hole Stream-Adresse ..."];
     [m_host call:@"track.resolve" params:[NSDictionary dictionaryWithObjectsAndKeys:ref, @"ref", @"play", @"purpose", nil] done:^(id r, NSString *e) {
         if (e != nil) { [self Say:[NSString stringWithFormat:@"Wiedergabe: %@", e]]; return; }
-        NSDictionary *f = [r objectForKey:@"format"];
-        NSString *fs = [NSString stringWithFormat:@"%@ %@ Hz / %@ Bit", ([f objectForKey:@"codec"] ? [f objectForKey:@"codec"] : @"?"),
-                        ([f objectForKey:@"sample_rate"] ? [f objectForKey:@"sample_rate"] : @"?"), ([f objectForKey:@"bits"] ? [f objectForKey:@"bits"] : @"?")];
-        // step 2 (playback through the engine) follows; for now only report what the plugin resolved
-        [self Say:[NSString stringWithFormat:@"Aufgelöst: %@ (%@). Wiedergabe über die Engine folgt im nächsten Schritt.", [it objectForKey:@"title"], fs]];
+        [self PlayItem:it resolved:r];
     }];
+}
+
+
+#pragma mark playing a resolved item: load into the cache, then queue it like any local song
+
+- (void)FinishItem:(NSDictionary *)it file:(NSString *)file cover:(NSString *)cover hashId:(long long)hid {
+    // The downloaded file (and cover, same name .jpg) sits in Documents/Import/<album>/ -> normal import into Radio.db
+    KioskView *kv = (KioskView *)[self superview];
+    [MusicImporter ImportForServer:[kv m_sve]];
+    long long cid = [MusicImporter lastImportedClipID], fid = [MusicImporter lastImportedFolderID];
+    if (cid == 0) { [self Say:@"Import fehlgeschlagen (Format nicht lesbar?)."]; return; }
+    int sid = [[kv m_sve] serverid];
+    [DEL LockDB:NO];
+    DBOperations *db = [[DBOperations alloc] init];
+    ClipObject *c = [[db GetSongWithID:cid withServerid:sid] retain];
+    FolderObject *folder = [[db GetFolderForID:fid withserverid:sid withipodid:-1 withspotifyid:nil] retain];
+    [db release];
+    [DEL UnlockDB];
+    GLView *glv = [kv m_glv];
+    if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];   // carousel shows the album
+    if (c != nil) [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+    [c release]; [folder release];
+    [self Say:[NSString stringWithFormat:@"In die Bibliothek übernommen: %@", [it objectForKey:@"title"]]];
+    [self removeFromSuperview];
+}
+
+- (void)TickDownload {
+    if (m_dltask == nil) return;
+    long long got = [m_dltask countOfBytesReceived], all = [m_dltask countOfBytesExpectedToReceive];
+    if (all > 0) [self Say:[NSString stringWithFormat:@"Lade ... %.1f / %.1f MB", got / 1048576.0, all / 1048576.0]];
+    else [self Say:[NSString stringWithFormat:@"Lade ... %.1f MB", got / 1048576.0]];
+}
+
+- (void)PlayItem:(NSDictionary *)it resolved:(NSDictionary *)r {
+    NSURL *url = [NSURL URLWithString:([r objectForKey:@"url"] ? [r objectForKey:@"url"] : @"")];
+    if (url == nil) { [self Say:@"Ungültige Stream-Adresse."]; return; }
+    NSString *pid = ([m_host pluginId] != nil) ? [m_host pluginId] : @"plugin";
+    NSString *alb = [[it objectForKey:@"album"] length] ? [it objectForKey:@"album"] : @"Quellen";
+    alb = [[alb stringByReplacingOccurrencesOfString:@"/" withString:@"-"] stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *dir = [[docs stringByAppendingPathComponent:@"Import"] stringByAppendingPathComponent:alb];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *hex = nil;
+    unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", pid, [it objectForKey:@"ref"]], &hex);
+    long long hid = -(long long)(h64 & 0x3fffffffffULL) - 100000;
+    NSString *ext = [[url path] pathExtension];
+    if ([ext length] == 0 || [ext length] > 5) ext = [[r objectForKey:@"format"] objectForKey:@"codec"];
+    if ([ext length] == 0) ext = @"audio";
+    NSString *stem = [NSString stringWithFormat:@"%@ - %@", [[it objectForKey:@"artist"] length] ? [it objectForKey:@"artist"] : @"Unknown Artist", [it objectForKey:@"title"] ? [it objectForKey:@"title"] : hex];
+    stem = [[stem stringByReplacingOccurrencesOfString:@"/" withString:@"-"] stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+    NSString *file = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:ext]];
+    NSString *cover = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:@"jpg"]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    void (^loadAudio)(void) = [[^{
+        if ([fm fileExistsAtPath:file]) {
+            [self FinishItem:it file:file cover:([fm fileExistsAtPath:cover] ? cover : nil) hashId:hid];
+            return;
+        }
+        [self Say:@"Lade ..."];
+        m_dltask = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
+            NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 200;
+            NSString *msg = nil;
+            if (err != nil) msg = [err localizedDescription];
+            else if (code < 200 || code >= 300) msg = [NSString stringWithFormat:@"HTTP %ld", (long)code];
+            else if (![[NSFileManager defaultManager] moveItemAtURL:tmp toURL:[NSURL fileURLWithPath:file] error:nil]) msg = @"Datei konnte nicht abgelegt werden.";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [m_dltimer invalidate]; m_dltimer = nil; m_dltask = nil;
+                if (msg != nil) { if ([err code] != NSURLErrorCancelled) [self Say:[NSString stringWithFormat:@"Laden fehlgeschlagen: %@", msg]]; return; }
+                [self FinishItem:it file:file cover:([fm fileExistsAtPath:cover] ? cover : nil) hashId:hid];
+            });
+        }];
+        m_dltimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(TickDownload) userInfo:nil repeats:YES];
+        [m_dltask resume];
+    } copy] autorelease];
+
+    NSString *art = [it objectForKey:@"art"];
+    if ([art length] > 0 && [NSURL URLWithString:art] != nil && ![fm fileExistsAtPath:cover]) {
+        [self Say:@"Lade Cover ..."];
+        NSURL *au = [NSURL URLWithString:art];
+        [[[NSURLSession sharedSession] dataTaskWithURL:au completionHandler:^(NSData *d, NSURLResponse *rs, NSError *e) {
+            if (d != nil && e == nil && [UIImage imageWithData:d] != nil) [d writeToFile:cover atomically:YES];
+            dispatch_async(dispatch_get_main_queue(), ^{ loadAudio(); });
+        }] resume];
+    } else {
+        loadAudio();
+    }
 }
 
 @end

@@ -6,4 +6,7 @@
 @interface MusicImporter : NSObject
 + (void)ImportForServer:(ServerEntry *)server;
 + (NSSet *)audioExtensions;
+// IDs of the last song / folder written by ImportForServer: (0 if nothing was imported)
++ (long long)lastImportedClipID;
++ (long long)lastImportedFolderID;
 @end
