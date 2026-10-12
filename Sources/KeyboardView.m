@@ -899,6 +899,17 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         }
         [found release];
         [m_srtableview performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO];
+        // source plugins that are loaded (Quellen > Autostart) add their hits to the same list
+        [[RfxPluginManager shared] SearchText:text done:^(NSString *t, NSArray *clips) {
+            if ([[self m_searchlabel] text] == nil || ![[[self m_searchlabel] text] isEqualToString:t]) return;
+            [m_srlock lock];
+            for (int i = (int)[m_srarrayother count] - 1; i >= 0; i--)
+                if ([[m_srarrayother objectAtIndex:i] m_folderid] == -88) [m_srarrayother removeObjectAtIndex:i];
+            [m_srarrayother addObjectsFromArray:clips];
+            [m_srlock unlock];
+            [self SetResortFlag:1 withval:YES];
+            [m_srtableview reloadData];
+        }];
     } else {
         [m_srlock lock];
         [m_srarrayother removeAllObjects];
@@ -1141,6 +1152,10 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         if ((unsigned)itemFromSearchList >= [src count]) return;
         co = [src objectAtIndex:itemFromSearchList];
     }
+    if ([co m_folderid] == -88 && [co m_filepath] == nil) {      // hit of a source plugin: load + import first
+        [[RfxPluginManager shared] ImportClip:co];
+        return;
+    }
     double now = CACurrentMediaTime();
     if ((now - [m_pkiosk m_lastsongdragged]) < (double)[[m_pkiosk m_sve] m_songdragdelay]) {
         [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:2]];
@@ -1203,6 +1218,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 - (void)InitHelpPic { }
 - (id)GetFirstVideo { [self ResetupVideoView]; return [m_videoview GetFirstVideo]; }
 - (void)ResetupVideoView { [m_videoview Setup:2]; }
+- (BOOL)HasVideos { [m_videoview Setup:2]; return [m_videoview RowCount] > 0; }
 
 #pragma mark - restored panels (registers 1, 3, 6, 7, 8, 9)
 

@@ -66,21 +66,6 @@
 
 #pragma mark - plugin cache (files that plugins resolved are loaded here and played through the audio engine)
 
-static NSString *RfxPluginCacheDir(void) {
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-    return [docs stringByAppendingPathComponent:@"PluginCache"];
-}
-
-static BOOL RfxPluginKeepCache(void) {
-    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxPluginKeepCache"];
-    return (v == nil) ? YES : [v boolValue];
-}
-
-// "temporary" mode: everything loaded in an earlier run is removed when the app starts again
-static void RfxCleanPluginCache(void) {
-    if (!RfxPluginKeepCache()) [[NSFileManager defaultManager] removeItemAtPath:RfxPluginCacheDir() error:nil];
-}
-
 static unsigned long long RfxHash64(NSString *s, NSString **hex) {
     unsigned char d[CC_SHA256_DIGEST_LENGTH];
     NSData *data = [s dataUsingEncoding:NSUTF8StringEncoding];
@@ -287,6 +272,370 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 }
 @end
 
+
+#pragma mark - plugin manager (autostart, search results in the normal search, import queue)
+
+static NSDictionary *RfxPluginPaths(void) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *pdir = [docs stringByAppendingPathComponent:@"Plugins"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
+        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"])
+            [d setObject:p forKey:[[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""]];
+    for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pdir error:nil])
+        if ([[f pathExtension] caseInsensitiveCompare:@"js"] == NSOrderedSame)
+            [d setObject:[pdir stringByAppendingPathComponent:f] forKey:[f stringByDeletingPathExtension]];
+    return d;
+}
+
+static NSString *RfxSafeName(NSString *s) {
+    NSMutableString *m = [NSMutableString stringWithString:(s != nil ? s : @"")];
+    for (NSString *bad in [NSArray arrayWithObjects:@"/", @":", @"\\", @"?", @"*", @"\"", @"<", @">", @"|", nil])
+        [m replaceOccurrencesOfString:bad withString:@"-" options:0 range:NSMakeRange(0, [m length])];
+    NSString *t = [m stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([t length] > 120) t = [t substringToIndex:120];
+    return [t length] ? t : @"Unknown";
+}
+
+static void RfxToast(NSString *t) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *w = [[UIApplication sharedApplication] keyWindow];
+        if (w == nil) return;
+        UILabel *l = (UILabel *)[w viewWithTag:7771];
+        if (l == nil) {
+            l = [[[UILabel alloc] init] autorelease];
+            [l setTag:7771];
+            [l setTextAlignment:NSTextAlignmentCenter];
+            [l setFont:[UIFont systemFontOfSize:15.0f]];
+            [l setTextColor:[UIColor whiteColor]];
+            [l setBackgroundColor:[UIColor colorWithWhite:0.1f alpha:0.9f]];
+            [[l layer] setCornerRadius:8.0f];
+            [l setClipsToBounds:YES];
+            [l setUserInteractionEnabled:NO];
+            [w addSubview:l];
+        }
+        [l setFrame:CGRectMake(40.0f, [w bounds].size.height - 90.0f, [w bounds].size.width - 80.0f, 40.0f)];
+        [l setText:t];
+        [w bringSubviewToFront:l];
+        [l.layer removeAllAnimations];
+        [l setAlpha:1.0f];
+        [UIView animateWithDuration:0.6 delay:4.0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ [l setAlpha:0.0f]; } completion:nil];
+    });
+}
+
+// square jpeg + 40 px thumbnail in the app's own naming (BuildSmallPicpath)
+static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
+    if (img == nil) img = [MusicImporter PlaceholderForTitle:title];
+    NSData *big = [MusicImporter SquareJPEG:img size:196.0f];
+    NSData *small = [MusicImporter SquareJPEG:img size:40.0f];
+    if (big) [big writeToFile:pic atomically:YES];
+    if (small) [small writeToFile:[DEL BuildSmallPicpath:pic] atomically:YES];
+}
+
+@interface RfxPluginManager () {
+    NSMutableDictionary *m_hosts;      // name -> RfxPluginHost (loaded)
+    NSMutableSet *m_loading;
+    KioskView *m_kv;
+    NSTimer *m_deb;
+    NSString *m_pendText;
+    void (^m_pendDone)(NSString *, NSArray *);
+    NSMutableArray *m_queue;           // import queue: {item, host, plugin}
+    BOOL m_busy;
+    int m_total, m_doneCount;
+    BOOL m_queueLast;
+}
+@end
+
+static RfxPluginManager *gRfxPM = nil;
+
+@implementation RfxPluginManager
+
++ (RfxPluginManager *)shared {
+    if (gRfxPM == nil) gRfxPM = [[RfxPluginManager alloc] init];
+    return gRfxPM;
+}
+- (id)init {
+    self = [super init];
+    if (self) { m_hosts = [[NSMutableDictionary alloc] init]; m_loading = [[NSMutableSet alloc] init]; m_queue = [[NSMutableArray alloc] init]; }
+    return self;
+}
+- (void)setKiosk:(KioskView *)kv { m_kv = kv; }
+
+- (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
+
+- (BOOL)IsAutostart:(NSString *)name {
+    return [[[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"] containsObject:name];
+}
+- (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
+
+- (void)SetAutostart:(BOOL)on forName:(NSString *)name {
+    NSMutableArray *a = [NSMutableArray arrayWithArray:[[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"]];
+    [a removeObject:name];
+    if (on) [a addObject:name];
+    [[NSUserDefaults standardUserDefaults] setObject:a forKey:@"RfxPluginAutostart"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    if (on) [self Load:name done:nil];
+    else [m_hosts removeObjectForKey:name];
+}
+
+- (void)StartAutoload {
+    for (NSString *n in [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"]) [self Load:n done:nil];
+}
+
+- (void)Load:(NSString *)name done:(void (^)(RfxPluginHost *))done {
+    RfxPluginHost *h = [m_hosts objectForKey:name];
+    if (h != nil) { if (done) done(h); return; }
+    if ([m_loading containsObject:name]) { if (done) done(nil); return; }
+    NSString *path = [RfxPluginPaths() objectForKey:name];
+    NSString *src = (path != nil) ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (src == nil) { RfxToast([NSString stringWithFormat:@"Plugin %@ nicht gefunden.", name]); if (done) done(nil); return; }
+    NSString *err = nil;
+    RfxJSPlugin *js = [[RfxJSPlugin alloc] initWithScript:src pluginId:name error:&err];
+    if (js == nil) { RfxToast([NSString stringWithFormat:@"Plugin %@: %@", name, err]); if (done) done(nil); return; }
+    RfxPluginHost *host = [[[RfxPluginHost alloc] initWithJS:js] autorelease];
+    [js release];
+    [m_loading addObject:name];
+    [host initializeDone:^(NSString *e) {
+        [m_loading removeObject:name];
+        if (e != nil) { RfxToast([NSString stringWithFormat:@"Plugin %@: %@", name, e]); if (done) done(nil); return; }
+        [m_hosts setObject:host forKey:name];
+        if (done) done(host);
+    }];
+}
+
+#pragma mark search
+
+- (void)SearchText:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
+    NSString *t = [[text copy] autorelease];
+    void (^d)(NSString *, NSArray *) = [[done copy] autorelease];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [m_pendText release]; m_pendText = [t retain];
+        [m_pendDone release]; m_pendDone = [d copy];
+        [m_deb invalidate];
+        m_deb = [NSTimer scheduledTimerWithTimeInterval:0.8 target:self selector:@selector(FireSearch) userInfo:nil repeats:NO];
+    });
+}
+
+- (void)FireSearch {
+    m_deb = nil;
+    NSString *text = [[m_pendText retain] autorelease];
+    void (^done)(NSString *, NSArray *) = [[m_pendDone retain] autorelease];
+    NSMutableArray *hosts = [NSMutableArray array];
+    for (NSString *n in m_hosts) if ([[m_hosts objectForKey:n] has:@"search"]) [hosts addObject:n];
+    if ([hosts count] == 0 || [text length] == 0 || done == nil) return;
+    __block int waiting = (int)[hosts count];
+    NSMutableArray *all = [NSMutableArray array];
+    for (NSString *n in hosts) {
+        RfxPluginHost *h = [m_hosts objectForKey:n];
+        NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:text, @"query", [NSArray arrayWithObjects:@"album", @"track", nil], @"kinds",
+                           [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:12], @"limit", nil];
+        [h call:@"search" params:p done:^(id r, NSString *e) {
+            if (e == nil && [r isKindOfClass:[NSDictionary class]]) {
+                for (NSDictionary *g in [r objectForKey:@"groups"]) {
+                    if ([[g objectForKey:@"kind"] isEqualToString:@"artist"]) continue;
+                    for (NSDictionary *it in [g objectForKey:@"items"]) {
+                        NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:it];
+                        [m setObject:n forKey:@"_plugin"];
+                        if ([m objectForKey:@"kind"] == nil) [m setObject:[g objectForKey:@"kind"] forKey:@"kind"];
+                        [all addObject:m];
+                    }
+                }
+            }
+            if (--waiting == 0) [self BuildClips:all text:text done:done];
+        }];
+    }
+}
+
+- (void)BuildClips:(NSArray *)all text:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
+    int sid = [[m_kv m_sve] serverid];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+        NSString *tdir = [[docs stringByAppendingPathComponent:@"PluginCache"] stringByAppendingPathComponent:@"thumbs"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:tdir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSMutableArray *specs = [NSMutableArray array];   // {item, pic, id}
+        dispatch_group_t g = dispatch_group_create();
+        for (NSDictionary *it in all) {
+            NSString *hex = nil;
+            unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", [it objectForKey:@"_plugin"], [it objectForKey:@"ref"]], &hex);
+            NSString *pic = [tdir stringByAppendingPathComponent:[hex stringByAppendingPathExtension:@"jpg"]];
+            [specs addObject:[NSDictionary dictionaryWithObjectsAndKeys:it, @"item", pic, @"pic", [NSNumber numberWithLongLong:-(long long)(h64 & 0x3fffffffffULL) - 100000], @"id", nil]];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:pic] && [[NSFileManager defaultManager] fileExistsAtPath:[DEL BuildSmallPicpath:pic]]) continue;
+            NSString *art = [it objectForKey:@"art"];
+            NSURL *au = ([art isKindOfClass:[NSString class]] && [art length]) ? [NSURL URLWithString:art] : nil;
+            NSString *title = [it objectForKey:@"title"];
+            if (au == nil) { RfxWriteThumbs(nil, pic, title); continue; }
+            dispatch_group_enter(g);
+            NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:au];
+            [rq setTimeoutInterval:8.0];
+            [[[NSURLSession sharedSession] dataTaskWithRequest:rq completionHandler:^(NSData *d, NSURLResponse *rs, NSError *er) {
+                NSAutoreleasePool *p2 = [[NSAutoreleasePool alloc] init];
+                UIImage *img = (d != nil && er == nil) ? [UIImage imageWithData:d] : nil;
+                RfxWriteThumbs(img, pic, title);
+                [p2 release];
+                dispatch_group_leave(g);
+            }] resume];
+        }
+        dispatch_group_wait(g, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
+        dispatch_release(g);
+        NSMutableArray *clips = [NSMutableArray array];
+        for (NSDictionary *sp in specs) {
+            NSDictionary *it = [sp objectForKey:@"item"];
+            ClipObject *c = [[ClipObject alloc] init];
+            [c setID:[[sp objectForKey:@"id"] longLongValue]];
+            [c setM_folderid:-88];
+            [c setM_serverid:sid];
+            NSString *kind = [it objectForKey:@"kind"];
+            BOOL isTrack = [kind isEqualToString:@"track"];
+            NSString *artist = [it objectForKey:@"artist"];
+            if (![artist isKindOfClass:[NSString class]] || [artist length] == 0) artist = [it objectForKey:@"subtitle"];
+            if (![artist isKindOfClass:[NSString class]]) artist = @"";
+            NSString *extra = isTrack ? @"" : ([[it objectForKey:@"track_count"] intValue] > 0 ?
+                [NSString stringWithFormat:@" · Album, %d Titel", [[it objectForKey:@"track_count"] intValue]] : @" · Album");
+            [c setM_title:([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")];
+            [c setM_interpret:[artist stringByAppendingString:extra]];
+            [c setM_albumname:([it objectForKey:@"album"] && [[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
+            [c setM_picturepath:[sp objectForKey:@"pic"]];
+            NSData *j = [NSJSONSerialization dataWithJSONObject:it options:0 error:nil];
+            if (j != nil) [c setM_information:[[[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] autorelease]];
+            [clips addObject:c];
+            [c release];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ done(text, clips); });
+        [pool release];
+    });
+}
+
+#pragma mark import
+
+- (void)ImportClip:(ClipObject *)co {
+    NSData *j = [[co m_information] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *it = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
+    RfxPluginHost *h = [m_hosts objectForKey:[it objectForKey:@"_plugin"]];
+    if (it == nil || h == nil) { RfxToast(@"Plugin nicht geladen."); return; }
+    [self ImportItem:it host:h queueLast:YES];
+}
+
+- (void)ImportItem:(NSDictionary *)it host:(RfxPluginHost *)h queueLast:(BOOL)queueLast {
+    NSString *kind = [it objectForKey:@"kind"];
+    NSString *plugin = [it objectForKey:@"_plugin"] ? [it objectForKey:@"_plugin"] : [h pluginId];
+    if ([kind isEqualToString:@"track"] || [kind length] == 0) {
+        [m_queue addObject:[NSDictionary dictionaryWithObjectsAndKeys:it, @"item", h, @"host", plugin, @"plugin", nil]];
+        m_total++; m_queueLast = queueLast && !m_busy && [m_queue count] == 1;
+        [self Pump];
+        return;
+    }
+    RfxToast([NSString stringWithFormat:@"Lese %@ ...", [it objectForKey:@"title"]]);
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:500], @"limit", nil];
+    NSString *album = [it objectForKey:@"title"];
+    [h call:@"browse.list" params:p done:^(id r, NSString *e) {
+        if (e != nil) { RfxToast([NSString stringWithFormat:@"Album: %@", e]); return; }
+        int n = 0;
+        for (NSDictionary *t in [r objectForKey:@"items"]) {
+            if (![[t objectForKey:@"kind"] isEqualToString:@"track"] || ([t objectForKey:@"playable"] && ![[t objectForKey:@"playable"] boolValue])) continue;
+            NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:t];
+            if (![[m objectForKey:@"album"] isKindOfClass:[NSString class]]) [m setObject:album forKey:@"album"];
+            if ([m objectForKey:@"art"] == nil && [it objectForKey:@"art"] != nil) [m setObject:[it objectForKey:@"art"] forKey:@"art"];
+            [m setObject:plugin forKey:@"_plugin"];
+            [m_queue addObject:[NSDictionary dictionaryWithObjectsAndKeys:m, @"item", h, @"host", plugin, @"plugin", nil]];
+            m_total++; n++;
+        }
+        m_queueLast = NO;
+        if (n == 0) { RfxToast(@"Keine abspielbaren Titel."); return; }
+        [self Pump];
+    }];
+}
+
+- (void)Pump {
+    if (m_busy) return;
+    if ([m_queue count] == 0) {
+        if (m_total > 0) [self FinishBatch];
+        m_total = 0; m_doneCount = 0;
+        return;
+    }
+    m_busy = YES;
+    NSDictionary *job = [[[m_queue objectAtIndex:0] retain] autorelease];
+    [m_queue removeObjectAtIndex:0];
+    NSDictionary *it = [job objectForKey:@"item"];
+    RfxPluginHost *h = [job objectForKey:@"host"];
+    RfxToast([NSString stringWithFormat:@"Lade %d/%d: %@", m_doneCount + 1, m_total, [it objectForKey:@"title"]]);
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", @"play", @"purpose", nil];
+    [h call:@"track.resolve" params:p done:^(id r, NSString *e) {
+        NSURL *url = (e == nil && [r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] isKindOfClass:[NSString class]]) ? [NSURL URLWithString:[r objectForKey:@"url"]] : nil;
+        if (url == nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], (e ? e : @"keine Adresse")]); [self JobDone]; return; }
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+            NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+            NSString *dir = [docs stringByAppendingPathComponent:@"Import"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *ext = [[url path] pathExtension];
+            if ([ext length] == 0 || [ext length] > 5) ext = [[[r objectForKey:@"format"] objectForKey:@"codec"] description];
+            if ([ext length] == 0 || [ext isEqualToString:@"(null)"]) ext = @"audio";
+            NSString *artist = [[it objectForKey:@"artist"] isKindOfClass:[NSString class]] && [[it objectForKey:@"artist"] length] ? [it objectForKey:@"artist"] : @"Unknown Artist";
+            NSString *stem = RfxSafeName([NSString stringWithFormat:@"%@ - %@", artist, [it objectForKey:@"title"]]);
+            NSString *file = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:ext]];
+            NSString *cover = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:@"jpg"]];
+            NSString *art = [it objectForKey:@"art"];
+            if ([art isKindOfClass:[NSString class]] && [art length] && ![[NSFileManager defaultManager] fileExistsAtPath:cover]) {
+                NSURL *au = [NSURL URLWithString:art];
+                NSData *d = (au != nil) ? [NSData dataWithContentsOfURL:au] : nil;
+                if (d != nil && [UIImage imageWithData:d] != nil) [d writeToFile:cover atomically:YES];
+            }
+            __block NSString *msg = nil;
+            if (![[NSFileManager defaultManager] fileExistsAtPath:file]) {
+                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                [[[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
+                    NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 200;
+                    if (err != nil) msg = [[err localizedDescription] copy];
+                    else if (code < 200 || code >= 300) msg = [[NSString stringWithFormat:@"HTTP %ld", (long)code] copy];
+                    else if (![[NSFileManager defaultManager] moveItemAtURL:tmp toURL:[NSURL fileURLWithPath:file] error:nil]) msg = [@"Datei nicht ablegbar" copy];
+                    dispatch_semaphore_signal(sem);
+                }] resume];
+                dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+                dispatch_release(sem);
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (msg != nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], msg]); [msg release]; }
+                [self JobDone];
+            });
+            [pool release];
+        });
+    }];
+}
+
+- (void)JobDone {
+    m_busy = NO;
+    m_doneCount++;
+    [self Pump];
+}
+
+- (void)FinishBatch {
+    [self FinishImportQueue:m_queueLast];
+}
+
+// imports what is waiting in Documents/Import (normal library import into the main folder), shows that folder in the
+// carousel and, for a single title, puts it into the queue
+- (void)FinishImportQueue:(BOOL)queue {
+    if (m_kv == nil) return;
+    [MusicImporter ImportForServer:[m_kv m_sve]];
+    long long cid = [MusicImporter lastImportedClipID], fid = [MusicImporter lastImportedFolderID];
+    if (cid == 0) { RfxToast(@"Import fehlgeschlagen (Format nicht lesbar?)."); return; }
+    int sid = [[m_kv m_sve] serverid];
+    [DEL LockDB:NO];
+    DBOperations *db = [[DBOperations alloc] init];
+    ClipObject *c = [[db GetSongWithID:cid withServerid:sid] retain];
+    FolderObject *folder = [[db GetFolderForID:fid withserverid:sid withipodid:-1 withspotifyid:nil] retain];
+    [db release];
+    [DEL UnlockDB];
+    GLView *glv = [m_kv m_glv];
+    if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];
+    if (queue && c != nil) [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+    [c release]; [folder release];
+    RfxToast(queue ? @"Zur Bibliothek hinzugefügt und eingereiht." : @"Zur Bibliothek hinzugefügt (Ordner Imported).");
+}
+@end
+
 @interface RfxSourcesPanel : UIView <UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate> {
     RfxPluginHost *m_host;
     UITextField *m_addr, *m_query;
@@ -370,7 +719,7 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 }
 
 - (void)UpdateCacheButton {
-    [m_cachebtn setTitle:@"Import: Bibliothek" forState:UIControlStateNormal];
+    [m_cachebtn setTitle:@"Autostart" forState:UIControlStateNormal];
 }
 
 - (void)Say:(NSString *)t { [m_status setText:t]; }
@@ -390,13 +739,32 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
     case 2: [self SignIn]; break;
     case 3: [self SignOut]; break;
     case 4: [self GoBack]; break;
-    case 5:
-        [self Say:@"Geladene Titel werden wie ein Import in die Bibliothek (Radio.db) übernommen."];
-        break;
+    case 5: [self ShowAutostart]; break;
     }
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self Search]; return YES; }
+
+// which plugins are loaded when the app starts (and take part in the normal search)
+- (void)ShowAutostart {
+    RfxPluginManager *pm = [RfxPluginManager shared];
+    NSArray *names = [pm AllNames];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugins beim Start laden"
+        message:@"Geladene Plugins erscheinen in der normalen Suche. Zum Umschalten antippen." preferredStyle:UIAlertControllerStyleAlert];
+    for (NSString *n in names) {
+        BOOL on = [pm IsAutostart:n];
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@  %@", (on ? @"\u2713" : @"\u2013"), n]
+            style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+                [pm SetAutostart:!on forName:n];
+                [self Say:[NSString stringWithFormat:@"%@: %@", n, (!on ? @"wird beim Start geladen (jetzt geladen)." : @"wird beim Start nicht geladen.")]];
+                [self ShowAutostart];
+            }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Fertig" style:UIAlertActionStyleCancel handler:nil]];
+    UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+    while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
+    [vc presentViewController:ac animated:YES completion:nil];
+}
 
 - (void)Connect {
     NSString *a = [[m_addr text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -585,23 +953,7 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 #pragma mark playing a resolved item: load into the cache, then queue it like any local song
 
 - (void)FinishItem:(NSDictionary *)it file:(NSString *)file cover:(NSString *)cover hashId:(long long)hid {
-    // The downloaded file (and cover, same name .jpg) sits in Documents/Import/<album>/ -> normal import into Radio.db
-    KioskView *kv = (KioskView *)[self superview];
-    [MusicImporter ImportForServer:[kv m_sve]];
-    long long cid = [MusicImporter lastImportedClipID], fid = [MusicImporter lastImportedFolderID];
-    if (cid == 0) { [self Say:@"Import fehlgeschlagen (Format nicht lesbar?)."]; return; }
-    int sid = [[kv m_sve] serverid];
-    [DEL LockDB:NO];
-    DBOperations *db = [[DBOperations alloc] init];
-    ClipObject *c = [[db GetSongWithID:cid withServerid:sid] retain];
-    FolderObject *folder = [[db GetFolderForID:fid withserverid:sid withipodid:-1 withspotifyid:nil] retain];
-    [db release];
-    [DEL UnlockDB];
-    GLView *glv = [kv m_glv];
-    if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];   // carousel shows the album
-    if (c != nil) [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
-    [c release]; [folder release];
-    [self Say:[NSString stringWithFormat:@"In die Bibliothek übernommen: %@", [it objectForKey:@"title"]]];
+    [[RfxPluginManager shared] FinishImportQueue:YES];
     [self removeFromSuperview];
 }
 
@@ -616,10 +968,9 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
     NSURL *url = [NSURL URLWithString:([r objectForKey:@"url"] ? [r objectForKey:@"url"] : @"")];
     if (url == nil) { [self Say:@"Ungültige Stream-Adresse."]; return; }
     NSString *pid = ([m_host pluginId] != nil) ? [m_host pluginId] : @"plugin";
-    NSString *alb = [[it objectForKey:@"album"] length] ? [it objectForKey:@"album"] : @"Quellen";
-    alb = [[alb stringByReplacingOccurrencesOfString:@"/" withString:@"-"] stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+    // everything lands in the main "Imported" folder (files directly in Documents/Import)
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-    NSString *dir = [[docs stringByAppendingPathComponent:@"Import"] stringByAppendingPathComponent:alb];
+    NSString *dir = [docs stringByAppendingPathComponent:@"Import"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *hex = nil;
     unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", pid, [it objectForKey:@"ref"]], &hex);
@@ -792,6 +1143,8 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
         }
         // DEVIATION: demo songs for a device without music (only when the library is empty)
         [MusicImporter ImportForServer:m_sve];      // Documents/Import -> library
+        [[RfxPluginManager shared] setKiosk:self];
+        [[RfxPluginManager shared] StartAutoload];  // plugins chosen under Quellen > Autostart
         [TestLibrary RemoveDemoForServer:m_sve];
         m_trailerimagetime = [m_sve trailerimagetime];
 

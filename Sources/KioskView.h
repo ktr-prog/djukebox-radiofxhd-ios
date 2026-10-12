@@ -270,6 +270,7 @@
 - (void)EndFunction;
 - (void)CardReaderOff;
 - (void)StartKioskShutdowntimer:(int)kioskShutdowntimer;
+- (void)OpenSourcesPanel;
 - (void)StopKioskShutdowntimer;
 - (void)ShutdownFunction:(id)shutdownFunction;
 - (void)Restart30secsearchTimer;
@@ -315,4 +316,20 @@
 - (void)InsertIntoRemoteQueue:(int)type withpoint:(CGPoint)point witharg1:(long long)arg1 witharg2:(int)arg2
                      witharg3:(int)arg3 withleaveoutclient:(long)leaveoutclient witharg4:(int)arg4;
 - (void)StartTPAni:(id)arg;
+@end
+
+
+// Plugin manager (implementation in KioskView.m): autostart of source plugins, their results in the normal search,
+// import of plugin titles into the library.
+@class ClipObject;
+@interface RfxPluginManager : NSObject
++ (RfxPluginManager *)shared;
+- (void)setKiosk:(KioskView *)kv;
+- (void)StartAutoload;
+- (void)SearchText:(NSString *)text done:(void (^)(NSString *text, NSArray *clips))done;
+- (void)ImportClip:(ClipObject *)co;
+- (NSArray *)AllNames;
+- (BOOL)IsAutostart:(NSString *)name;
+- (void)SetAutostart:(BOOL)on forName:(NSString *)name;
+- (void)FinishImportQueue:(BOOL)queue;
 @end
