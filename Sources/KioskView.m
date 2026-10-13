@@ -1101,6 +1101,11 @@ static RfxPluginManager *gRfxPM = nil;
         NSString *url = ([uo isKindOfClass:[NSString class]] && [uo length] > 0) ? uo : nil;
         NSString *ins = [io isKindOfClass:[NSString class]] ? io : nil;
         BOOL needInput = [[r objectForKey:@"expects_input"] boolValue];
+        if (url == nil && !needInput) {   // the plugin did it itself (or needs setup): just tell the result
+            [self Alert:@"Anmeldung" msg:(ins != nil ? ins : @"Fertig.")];
+            [self ShowAuthStatus];
+            return;
+        }
         if (url != nil && [NSURL URLWithString:url] != nil) [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Anmeldung"
             message:[NSString stringWithFormat:@"%@\n\n%@%@",
