@@ -656,7 +656,11 @@ static RfxPluginManager *gRfxPM = nil;
         m_warned = YES;
         RfxToast([[RfxPluginPaths() allKeys] count] ? @"Kein Plugin geladen: Quellen > Autostart wählen." : @"Keine Plugins gefunden.");
     }
-    if ([hosts count] == 0 || [text length] == 0 || done == nil) return;
+    if ([hosts count] == 0 || [text length] == 0 || done == nil) {
+        if ([text length] > 1) RfxToast([NSString stringWithFormat:@"Plugin-Suche: %d Plugin(s) geladen, done=%d", (int)[hosts count], done != nil]);
+        return;
+    }
+    RfxToast([NSString stringWithFormat:@"Plugin-Suche '%@' läuft (%d Plugin)", text, (int)[hosts count]]);
     __block BOOL hadErr = NO;
     __block int waiting = (int)[hosts count];
     NSMutableArray *all = [NSMutableArray array];
@@ -676,6 +680,7 @@ static RfxPluginManager *gRfxPM = nil;
                     }
                 }
             }
+            if (e == nil) RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: Antwort ok (%d Gruppen)", n, [r isKindOfClass:[NSDictionary class]] ? (int)[[r objectForKey:@"groups"] count] : -1]);
             if (e != nil) { hadErr = YES; RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]); }
             if (--waiting == 0) { if ([all count] == 0 && !hadErr) RfxToast(@"Plugin-Suche: keine Treffer."); [self BuildClips:all text:text done:done]; }
         }];
