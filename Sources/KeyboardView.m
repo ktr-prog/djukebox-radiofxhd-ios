@@ -596,7 +596,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     if ([g state] != UIGestureRecognizerStateEnded) return;
     CGPoint p = [g locationInView:m_srtableview];
     NSIndexPath *ip = [m_srtableview indexPathForRowAtPoint:p];
-    if (ip == nil) return;
+    if (ip == nil) { [RfxPluginManager Toast:@"Tipp neben die Liste."]; return; }
     RfxCrumb("SRTapped indexpath");
     int section = (int)[ip section];
     int row = (int)[ip row];
@@ -610,7 +610,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     int col = (colw > 0) ? (int)(p.x / (float)colw) : 0;
     if (col >= cols) col = cols - 1;
     int idx = row + rows * col;
-    if (idx < 0 || idx >= count) return;
+    if (idx < 0 || idx >= count) { [RfxPluginManager Toast:[NSString stringWithFormat:@"Leeres Feld (Liste %d, Eintrag %d von %d).", section, idx, count]]; return; }
     RfxCrumb("SRTapped -> AddItem");
     [self AddItemFromSearchList:idx withsection:section withdirectClipObject:nil];
     RfxCrumb("SRTapped done");
@@ -1181,7 +1181,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     if (co == nil) {
         if (itemFromSearchList < 0) return;
         NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
-        if ((unsigned)itemFromSearchList >= [src count]) return;
+        if ((unsigned)itemFromSearchList >= [src count]) { [RfxPluginManager Toast:@"Eintrag nicht mehr vorhanden."]; return; }
         co = [src objectAtIndex:itemFromSearchList];
     }
     RfxCrumb("AddItem got clip");
@@ -1217,7 +1217,8 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         [m_pkiosk AddClip:n atIndex:-1 fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
         RfxCrumb("AddItem AddClip done");
         added = n;
-        [n release];
+        // no [n release] here: AddClip takes over the reference (it releases the clip itself and the queue array owns it);
+        // an extra release freed the clip while it was still in the queue (crash right after AddClip)
     }
     if (directClipObject == nil) {
         [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:2]];

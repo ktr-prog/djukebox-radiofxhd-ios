@@ -298,11 +298,13 @@ static NSString *RfxSafeName(NSString *s) {
     return [t length] ? t : @"Unknown";
 }
 
+static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
+
 static void RfxToast(NSString *t) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSLog(@"[Toast] %@", t);
-        // topmost window that exists (keyWindow can be nil), label sits above everything in it
-        UIWindow *w = [[UIApplication sharedApplication] keyWindow];
+        UIView *w = gRfxToastHost;
+        if (w == nil) w = [[UIApplication sharedApplication] keyWindow];
         if (w == nil) w = [[[UIApplication sharedApplication] windows] lastObject];
         if (w == nil) return;
         UILabel *l = (UILabel *)[w viewWithTag:7771];
@@ -368,7 +370,7 @@ static RfxPluginManager *gRfxPM = nil;
     return self;
 }
 + (void)Toast:(NSString *)t { RfxToast(t); }
-- (void)setKiosk:(KioskView *)kv { m_kv = kv; }
+- (void)setKiosk:(KioskView *)kv { m_kv = kv; gRfxToastHost = kv; }
 
 - (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
 
@@ -531,6 +533,7 @@ static RfxPluginManager *gRfxPM = nil;
 #pragma mark import
 
 - (void)ImportClip:(ClipObject *)co {
+    RfxToast([NSString stringWithFormat:@"Plugin-Treffer: %@", [co m_title]]);
     NSData *j = [[co m_information] dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *it = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
     RfxPluginHost *h = [m_hosts objectForKey:[it objectForKey:@"_plugin"]];
