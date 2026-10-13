@@ -69,6 +69,7 @@
     UIView *m_blackoverlay;
     NSArray *m_colorarray;
     float m_crossfadetime;
+    float m_curfade;   // fade length of the running song (dev menu: Überblendzeit)
     BOOL m_willplayradio;
     UIFont *m_titlefont;
     BOOL m_stopsecondthread;
