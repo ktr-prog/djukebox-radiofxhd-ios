@@ -1,5 +1,6 @@
 // KeyboardView : UIView -- decompiled from Radiofx_iPad (armv7), ported to arm64 / modern iOS.  Manual reference counting.
 #import "KeyboardView.h"
+#import "RfxCrashLog.h"
 #import "GLView.h"
 #import "KioskView.h"
 #import "RadioAppDelegate.h"
@@ -591,24 +592,28 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 }
 
 - (void)SRTapped:(UITapGestureRecognizer *)g {
+    RfxCrumb("SRTapped begin");
     if ([g state] != UIGestureRecognizerStateEnded) return;
     CGPoint p = [g locationInView:m_srtableview];
     NSIndexPath *ip = [m_srtableview indexPathForRowAtPoint:p];
     if (ip == nil) return;
+    RfxCrumb("SRTapped indexpath");
     int section = (int)[ip section];
+    int row = (int)[ip row];
     NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
-    [m_srlock lock];
-    int count = (int)[src count];
-    [m_srlock unlock];
+    int count = (src != nil) ? (int)[src count] : 0;
     int rows = 0, cols = 0;
+    RfxCrumb("SRTapped matrix");
     [self GetTableMatrix:count withitemsincolum:&rows withcolumcount:&cols];
     if (cols < 1) return;
     int colw = (int)([m_srtableview frame].size.width / (float)cols);
     int col = (colw > 0) ? (int)(p.x / (float)colw) : 0;
     if (col >= cols) col = cols - 1;
-    int idx = (int)[ip row] + rows * col;
+    int idx = row + rows * col;
     if (idx < 0 || idx >= count) return;
+    RfxCrumb("SRTapped -> AddItem");
     [self AddItemFromSearchList:idx withsection:section withdirectClipObject:nil];
+    RfxCrumb("SRTapped done");
 }
 
 - (void)SRPictureThread:(NSNumber *)sRPictureThread {
@@ -1172,14 +1177,16 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 
 - (void)AddItemFromSearchList:(int)itemFromSearchList withsection:(int)section withdirectClipObject:(id)directClipObject {
     ClipObject *co = directClipObject;
-    if (directClipObject == nil) [RfxPluginManager Toast:[NSString stringWithFormat:@"Tipp: Eintrag %d, Liste %d (%d / %d Einträge)", itemFromSearchList, section, (int)[m_srarray count], (int)[m_srarrayother count]]];
+    RfxCrumb("AddItem begin");
     if (co == nil) {
         if (itemFromSearchList < 0) return;
         NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
         if ((unsigned)itemFromSearchList >= [src count]) return;
         co = [src objectAtIndex:itemFromSearchList];
     }
+    RfxCrumb("AddItem got clip");
     if ([co m_folderid] == -88 && [co m_filepath] == nil) {      // hit of a source plugin: load + import first
+        RfxCrumb("AddItem plugin import");
         [[RfxPluginManager shared] ImportClip:co];
         return;
     }
@@ -1190,12 +1197,15 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         return;
     }
     ClipObject *added = nil;
+    RfxCrumb("AddItem file check");
     if (!([co m_folderid] == -44 || [co m_folderid] == -66 || ([co m_filepath] != nil && [[NSFileManager defaultManager] fileExistsAtPath:[co m_filepath]])))
         [RfxPluginManager Toast:[NSString stringWithFormat:@"Datei nicht gefunden: %@", [co m_filepath] ? [[co m_filepath] lastPathComponent] : @"(kein Pfad)"]];
     if ([co m_folderid] == -44 || [co m_folderid] == -66 || ([co m_filepath] != nil && [[NSFileManager defaultManager] fileExistsAtPath:[co m_filepath]])) {
         [m_pkiosk setM_autoselected:NO];
+        RfxCrumb("AddItem copy");
         ClipObject *n = [[ClipObject alloc] init];
         [m_pkiosk CopyPropertiesFromObject:co toObject:n];
+        RfxCrumb("AddItem cdpicture");
         [n setM_imgv:[[[UIImageView alloc] initWithFrame:CGRectZero] autorelease]];
         UIImage *pic = [[m_pkiosk m_glv] CreateCDPicture:n roundpic:YES];
         [[n m_imgv] setImage:pic];
@@ -1203,7 +1213,9 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         CGRect fr = [m_pkiosk GetFrameForDragPic:(int)[[m_pkiosk m_clips] count]];
         fr = [m_pkiosk MakeSmallFrame:fr];
         [[n m_imgv] setFrame:fr];
+        RfxCrumb("AddItem AddClip");
         [m_pkiosk AddClip:n atIndex:-1 fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
+        RfxCrumb("AddItem AddClip done");
         added = n;
         [n release];
     }

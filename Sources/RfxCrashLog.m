@@ -8,6 +8,9 @@
 #include <mach-o/dyld.h>
 
 static char gCrashPath[1024];
+static char gCrumb[96];
+
+void RfxCrumb(const char *step) { strlcpy(gCrumb, step, sizeof(gCrumb)); }
 
 static void RfxWrite(int fd, const char *s) { if (fd >= 0) write(fd, s, strlen(s)); }
 
@@ -16,6 +19,7 @@ static void RfxSignal(int sig) {
     char buf[160];
     snprintf(buf, sizeof(buf), "SIGNAL %d\nimage0 slide: 0x%lx\n", sig, (unsigned long)_dyld_get_image_vmaddr_slide(0));
     RfxWrite(fd, buf);
+    RfxWrite(fd, "step: "); RfxWrite(fd, gCrumb); RfxWrite(fd, "\n");
     void *frames[48];
     int n = backtrace(frames, 48);
     for (int i = 0; i < n; i++) {
