@@ -289,6 +289,13 @@ static NSDictionary *RfxPluginPaths(void) {
     return d;
 }
 
+// buffer files of stream-only titles live here; the folder is emptied at every app start
+static NSString *RfxStreamDir(void) {
+    NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    return d;
+}
+
 static NSString *RfxSafeName(NSString *s) {
     NSMutableString *m = [NSMutableString stringWithString:(s != nil ? s : @"")];
     for (NSString *bad in [NSArray arrayWithObjects:@"/", @":", @"\\", @"?", @"*", @"\"", @"<", @">", @"|", nil])
@@ -332,6 +339,50 @@ static void RfxToast(NSString *t) {
     });
 }
 
+// simple progress bar at the bottom of the kiosk view (text + bar), used while plugin titles are loaded
+static void RfxProgress(NSString *text, float frac) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *w = gRfxToastHost;
+        if (w == nil) return;
+        UIView *box = [w viewWithTag:7772];
+        UILabel *lab = nil; UIProgressView *bar = nil;
+        if (box == nil) {
+            box = [[[UIView alloc] init] autorelease];
+            [box setTag:7772];
+            [box setBackgroundColor:[UIColor colorWithWhite:0.1f alpha:0.92f]];
+            [[box layer] setCornerRadius:8.0f];
+            [[box layer] setZPosition:99999.0f];
+            [box setUserInteractionEnabled:NO];
+            lab = [[[UILabel alloc] init] autorelease];
+            [lab setTag:1]; [lab setTextColor:[UIColor whiteColor]]; [lab setFont:[UIFont systemFontOfSize:14.0f]];
+            [lab setTextAlignment:NSTextAlignmentCenter];
+            [box addSubview:lab];
+            bar = [[[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault] autorelease];
+            [bar setTag:2];
+            [box addSubview:bar];
+            [w addSubview:box];
+        }
+        lab = (UILabel *)[box viewWithTag:1];
+        bar = (UIProgressView *)[box viewWithTag:2];
+        CGRect wb = [w bounds];
+        [box setFrame:CGRectMake(60.0f, wb.size.height - 70.0f, wb.size.width - 120.0f, 46.0f)];
+        [lab setFrame:CGRectMake(8.0f, 4.0f, [box bounds].size.width - 16.0f, 20.0f)];
+        [bar setFrame:CGRectMake(14.0f, 30.0f, [box bounds].size.width - 28.0f, 6.0f)];
+        [lab setText:text];
+        [bar setProgress:(frac < 0 ? 0 : (frac > 1 ? 1 : frac))];
+        [box setAlpha:1.0f];
+        [w bringSubviewToFront:box];
+    });
+}
+
+static void RfxProgressHide(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *box = [gRfxToastHost viewWithTag:7772];
+        if (box == nil) return;
+        [UIView animateWithDuration:0.4 animations:^{ [box setAlpha:0.0f]; }];
+    });
+}
+
 // square jpeg + 40 px thumbnail in the app's own naming (BuildSmallPicpath)
 static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
     if (img == nil) img = [MusicImporter PlaceholderForTitle:title];
@@ -353,6 +404,10 @@ static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
     int m_total, m_doneCount;
     BOOL m_queueLast;
     BOOL m_warned;
+    BOOL m_anyImport;
+    RfxPluginHost *m_playHost;          // plugin of the stream that is playing (for play reports)
+    NSString *m_playRef;
+    double m_playStart;
 }
 @end
 
@@ -398,6 +453,7 @@ static RfxPluginManager *gRfxPM = nil;
 }
 
 - (void)StartAutoload {
+    [[NSFileManager defaultManager] removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"] error:nil];
     for (NSString *n in [self AutostartList]) [self Load:n done:nil];
 }
 
@@ -583,15 +639,20 @@ static RfxPluginManager *gRfxPM = nil;
     [m_queue removeObjectAtIndex:0];
     NSDictionary *it = [job objectForKey:@"item"];
     RfxPluginHost *h = [job objectForKey:@"host"];
-    RfxToast([NSString stringWithFormat:@"Lade %d/%d: %@", m_doneCount + 1, m_total, [it objectForKey:@"title"]]);
+    RfxProgress([NSString stringWithFormat:@"%d/%d  %@", m_doneCount + 1, m_total, [it objectForKey:@"title"]], (float)m_doneCount / (float)(m_total > 0 ? m_total : 1));
     NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", @"play", @"purpose", nil];
     [h call:@"track.resolve" params:p done:^(id r, NSString *e) {
         NSURL *url = (e == nil && [r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] isKindOfClass:[NSString class]]) ? [NSURL URLWithString:[r objectForKey:@"url"]] : nil;
         if (url == nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], (e ? e : @"keine Adresse")]); [self JobDone]; return; }
+        int dc = m_doneCount, tot = m_total;
+        // a plugin can mark a title as "stream only" (resolve result "cache": false): it is only buffered in the
+        // temporary folder for playing and is never put into the library
+        id cacheFlag = [r objectForKey:@"cache"];
+        BOOL stream = ([cacheFlag isKindOfClass:[NSNumber class]] && ![cacheFlag boolValue]);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
             NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-            NSString *dir = [docs stringByAppendingPathComponent:@"Import"];
+            NSString *dir = stream ? RfxStreamDir() : [docs stringByAppendingPathComponent:@"Import"];
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
             NSString *ext = [[url path] pathExtension];
             if ([ext length] == 0 || [ext length] > 5) ext = [[[r objectForKey:@"format"] objectForKey:@"codec"] description];
@@ -609,18 +670,26 @@ static RfxPluginManager *gRfxPM = nil;
             __block NSString *msg = nil;
             if (![[NSFileManager defaultManager] fileExistsAtPath:file]) {
                 dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-                [[[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
+                NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
                     NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 200;
                     if (err != nil) msg = [[err localizedDescription] copy];
                     else if (code < 200 || code >= 300) msg = [[NSString stringWithFormat:@"HTTP %ld", (long)code] copy];
                     else if (![[NSFileManager defaultManager] moveItemAtURL:tmp toURL:[NSURL fileURLWithPath:file] error:nil]) msg = [@"Datei nicht ablegbar" copy];
                     dispatch_semaphore_signal(sem);
-                }] resume];
-                dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+                }];
+                [task resume];
+                NSString *ptitle = [it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"";
+                while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC))) != 0) {
+                    long long got = [task countOfBytesReceived], all = [task countOfBytesExpectedToReceive];
+                    float tf = (all > 0) ? (float)((double)got / (double)all) : 0.0f;
+                    RfxProgress([NSString stringWithFormat:@"%d/%d  %@  %.1f MB", dc + 1, tot, ptitle, got / 1048576.0], ((float)dc + tf) / (float)(tot > 0 ? tot : 1));
+                }
                 dispatch_release(sem);
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (msg != nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], msg]); [msg release]; }
+                else if (stream) [self QueueStreamed:it file:file cover:cover];
+                else m_anyImport = YES;
                 [self JobDone];
             });
             [pool release];
@@ -635,7 +704,67 @@ static RfxPluginManager *gRfxPM = nil;
 }
 
 - (void)FinishBatch {
-    [self FinishImportQueue:m_queueLast];
+    RfxProgressHide();
+    if (m_anyImport) [self FinishImportQueue:m_queueLast];
+    m_anyImport = NO;
+}
+
+#pragma mark play reports (plugins with the "reporting" capability)
+
+// A stream that starts playing / stops playing is announced to its plugin (playback.started / playback.ended with the
+// listened time), so a plugin can report plays to its service the way that service asks for it.
+- (void)PlaybackStarted:(ClipObject *)c {
+    [self PlaybackEnded];                               // the previous stream stops when the next one starts
+    if (c == nil || [c m_folderid] != -88 || [[c m_information] length] == 0) return;
+    NSData *j = [[c m_information] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *d = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
+    RfxPluginHost *h = [d isKindOfClass:[NSDictionary class]] ? [m_hosts objectForKey:[d objectForKey:@"_plugin"]] : nil;
+    NSString *ref = [d objectForKey:@"ref"];
+    if (h == nil || [ref length] == 0 || ![h has:@"reporting"]) return;
+    m_playHost = h;
+    m_playRef = [ref copy];
+    m_playStart = CACurrentMediaTime();
+    [h call:@"playback.started" params:[NSDictionary dictionaryWithObject:ref forKey:@"ref"] done:^(id r, NSString *e) {
+        if (e != nil) NSLog(@"[plugin] playback.started: %@", e);
+    }];
+}
+
+- (void)PlaybackEnded {
+    if (m_playRef == nil) return;
+    int ms = (int)((CACurrentMediaTime() - m_playStart) * 1000.0);
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:m_playRef, @"ref", [NSNumber numberWithInt:ms], @"listened_ms", nil];
+    RfxPluginHost *h = m_playHost;
+    [m_playRef release]; m_playRef = nil; m_playHost = nil;
+    [h call:@"playback.ended" params:p done:^(id r, NSString *e) {
+        if (e != nil) NSLog(@"[plugin] playback.ended: %@", e);
+    }];
+}
+
+// stream-only title: the buffer file in the temporary folder is played like a local song, nothing goes into the library
+- (void)QueueStreamed:(NSDictionary *)it file:(NSString *)file cover:(NSString *)cover {
+    if (m_kv == nil) return;
+    NSString *hex = nil;
+    unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", [it objectForKey:@"_plugin"], [it objectForKey:@"ref"]], &hex);
+    ClipObject *c = [[ClipObject alloc] init];
+    [c setID:-(long long)(h64 & 0x3fffffffffULL) - 100000];
+    [c setM_folderid:-88];
+    [c setM_serverid:[[m_kv m_sve] serverid]];
+    [c setM_title:([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")];
+    [c setM_interpret:([[it objectForKey:@"artist"] isKindOfClass:[NSString class]] ? [it objectForKey:@"artist"] : @"")];
+    [c setM_albumname:([[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
+    [c setM_filepath:file];
+    NSData *jr = [NSJSONSerialization dataWithJSONObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                    ([it objectForKey:@"_plugin"] ? [it objectForKey:@"_plugin"] : @""), @"_plugin", ([it objectForKey:@"ref"] ? [it objectForKey:@"ref"] : @""), @"ref", nil] options:0 error:nil];
+    if (jr != nil) [c setM_information:[[[NSString alloc] initWithData:jr encoding:NSUTF8StringEncoding] autorelease]];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:cover]) {
+        [c setM_picturepath:cover];
+        UIImage *img = [UIImage imageWithContentsOfFile:cover];
+        if (img != nil) { NSData *sm = [MusicImporter SquareJPEG:img size:40.0f]; if (sm) [sm writeToFile:[DEL BuildSmallPicpath:cover] atomically:YES]; }
+    }
+    [c setM_duration:[[it objectForKey:@"duration_ms"] intValue] / 1000];
+    [c setM_tracknumber:[[it objectForKey:@"track_no"] intValue]];
+    [[[m_kv m_glv] GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+    [c release];
 }
 
 // imports what is waiting in Documents/Import (normal library import into the main folder), shows that folder in the
@@ -743,7 +872,7 @@ static RfxPluginManager *gRfxPM = nil;
 }
 
 - (void)UpdateCacheButton {
-    [m_cachebtn setTitle:@"Autostart" forState:UIControlStateNormal];
+    [m_cachebtn setTitle:@"Plugins an/aus" forState:UIControlStateNormal];
 }
 
 - (void)Say:(NSString *)t { [m_status setText:t]; }
@@ -773,14 +902,15 @@ static RfxPluginManager *gRfxPM = nil;
 - (void)ShowAutostart {
     RfxPluginManager *pm = [RfxPluginManager shared];
     NSArray *names = [pm AllNames];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugins beim Start laden"
-        message:@"Geladene Plugins erscheinen in der normalen Suche. Zum Umschalten antippen." preferredStyle:UIAlertControllerStyleAlert];
+    NSMutableString *msg = [NSMutableString stringWithString:@"AN = wird beim Start geladen und sucht in der normalen Suche mit.\nAUS = bleibt inaktiv.\nTippe ein Plugin an, um es umzuschalten."];
+    if ([names count] == 0) [msg appendString:@"\n\nKeine Plugins gefunden. Eigene Plugins (.js) gehören in den Ordner Plugins der App (Dateien-App)."];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugins" message:msg preferredStyle:UIAlertControllerStyleAlert];
     for (NSString *n in names) {
         BOOL on = [pm IsAutostart:n];
-        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@  %@", (on ? @"\u2713" : @"\u2013"), n]
-            style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        NSString *label = [NSString stringWithFormat:@"%@   %@", (on ? @"\u25CF AN " : @"\u25CB AUS"), n];
+        [ac addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
                 [pm SetAutostart:!on forName:n];
-                [self Say:[NSString stringWithFormat:@"%@: %@", n, (!on ? @"wird beim Start geladen (jetzt geladen)." : @"wird beim Start nicht geladen.")]];
+                [self Say:[NSString stringWithFormat:@"%@ ist jetzt %@.", n, (!on ? @"AN (geladen, auch beim nächsten Start)" : @"AUS (entladen, beim Start nicht geladen)")]];
                 [self ShowAutostart];
             }]];
     }
@@ -865,8 +995,9 @@ static RfxPluginManager *gRfxPM = nil;
         BOOL needInput = [[r objectForKey:@"expects_input"] boolValue];
         if (url != nil) [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Anmeldung"
-            message:[NSString stringWithFormat:@"%@\n\nDie Seite wurde im Browser geöffnet. Füge hier den Code oder die Adresse ein, die du bekommst.%@",
-                     (ins != nil ? ins : @""), (needInput ? @"" : @"\n(Das Plugin schließt die Anmeldung evtl. selbst ab.)")]
+            message:[NSString stringWithFormat:@"%@\n\n%@%@",
+                     (ins != nil ? ins : @""), (url != nil ? @"Die Seite wurde im Browser geöffnet. Füge hier den Code oder die Adresse ein, die du bekommst." : @"Gib hier ein, was das Plugin verlangt."),
+                     (needInput ? @"" : @"\n(Das Plugin schließt die Anmeldung evtl. selbst ab.)")]
             preferredStyle:UIAlertControllerStyleAlert];
         [ac addTextFieldWithConfigurationHandler:^(UITextField *t) { [t setPlaceholder:@"Code / Adresse"]; [t setAutocapitalizationType:UITextAutocapitalizationTypeNone]; [t setAutocorrectionType:UITextAutocorrectionTypeNo]; }];
         [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
@@ -3400,6 +3531,7 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)StartAudioPlayer:(ClipObject *)audioPlayer withAniNext:(BOOL)aniNext witharg1:(int)arg1 {
+    [[RfxPluginManager shared] PlaybackStarted:audioPlayer];
     if (audioPlayer != nil) {
         [m_glv MarkClipPlayed:audioPlayer];
         if ([audioPlayer ID] > 0)
@@ -3743,6 +3875,7 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)StopPlayers {
+    [[RfxPluginManager shared] PlaybackEnded];
     if (mMCMixer == nil) return;
     [mMCMixer StopPlayingBus:0];
     [mMCMixer StopPlayingBus:1];
@@ -3753,7 +3886,7 @@ static void KV_PlayStatus(NSString *text) {
 }
 
 - (void)ContinuePlayers { if (mMCMixer != nil) [mMCMixer startAUGraph]; }
-- (void)PausePlayers { if (mMCMixer != nil) [mMCMixer stopAUGraph]; }
+- (void)PausePlayers { [[RfxPluginManager shared] PlaybackEnded]; if (mMCMixer != nil) [mMCMixer stopAUGraph]; }
 
 - (void)FlushGLForBackground { [m_glv FinishGL]; }
 

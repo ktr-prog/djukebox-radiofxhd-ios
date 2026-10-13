@@ -333,4 +333,6 @@
 - (BOOL)IsAutostart:(NSString *)name;
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name;
 - (void)FinishImportQueue:(BOOL)queue;
+- (void)PlaybackStarted:(ClipObject *)c;
+- (void)PlaybackEnded;
 @end
