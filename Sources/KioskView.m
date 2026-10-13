@@ -139,6 +139,13 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
             });
         }] resume];
     };
+    m_ctx[@"__native_timer"] = ^(int tid, double ms) {
+        [me retain];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ms * 1000000.0)), dispatch_get_main_queue(), ^{
+            [me->m_ctx[@"__timerFire"] callWithArguments:@[@(tid)]];
+            [me release];
+        });
+    };
     m_ctx[@"__native_reply"] = ^(int cid, BOOL ok, NSString *payload) {
         NSNumber *key = [NSNumber numberWithInt:cid];
         void (^d)(id, NSString *) = [[me->m_pending objectForKey:key] retain];
@@ -155,22 +162,102 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
         [d release];
     };
     NSString *shim =
-    @"var __cbs = {}; var __n = 0;"
-    "function fetchText(url, opts) { return new Promise(function (res, rej) { var id = ++__n; __cbs[id] = [res, rej];"
-    "  __native_fetch(id, url, JSON.stringify(opts || {})); }); }"
-    "function __fetchDone(id, ok, body, status) { var c = __cbs[id]; delete __cbs[id]; if (!c) return;"
-    "  if (ok) c[0]({ status: status, text: body }); else c[1](new Error(body)); }"
-    "function hostLog(t) { __native_log(String(t)); }"
-    "function hostOpen(u) { __native_open(String(u)); }"
-    "function hostGet(k) { return __native_get(String(k)); }"
-    "function hostSet(k, v) { __native_set(String(k), v == null ? '' : String(v)); }"
-    "function __dispatch(id, method, paramsJson) {"
-    "  Promise.resolve().then(function () { return handle(method, JSON.parse(paramsJson)); })"
-    "   .then(function (r) { __native_reply(id, true, JSON.stringify(r === undefined ? null : r)); },"
-    "         function (e) { __native_reply(id, false, String((e && e.message) || e)); }); }";
+    @"var __global = this;\n"
+    "var global = this, self = this, window = this;\n"
+    "if (typeof globalThis === 'undefined') { var globalThis = this; }\n"
+    "var module = { exports: {} };\n"
+    "var exports = module.exports;\n"
+    "var __cbs = {}; var __n = 0;\n"
+    "function fetchText(url, opts) { return new Promise(function (res, rej) { var id = ++__n; __cbs[id] = [res, rej];\n"
+    "  __native_fetch(id, url, JSON.stringify(opts || {})); }); }\n"
+    "function __fetchDone(id, ok, body, status) { var c = __cbs[id]; delete __cbs[id]; if (!c) return;\n"
+    "  if (ok) c[0]({ status: status, text: body }); else c[1](new Error(body)); }\n"
+    "function hostLog(t) { __native_log(String(t)); }\n"
+    "function hostOpen(u) { __native_open(String(u)); }\n"
+    "function hostGet(k) { return __native_get(String(k)); }\n"
+    "function hostSet(k, v) { __native_set(String(k), v == null ? '' : String(v)); }\n"
+    "function __fmt(a) { var o = [], i, v; for (i = 0; i < a.length; i++) { v = a[i];\n"
+    "  try { o.push(typeof v === 'string' ? v : JSON.stringify(v)); } catch (e) { o.push(String(v)); } } return o.join(' '); }\n"
+    "var console = { log: function () { hostLog(__fmt(arguments)); }, info: function () { hostLog(__fmt(arguments)); },\n"
+    "  warn: function () { hostLog(__fmt(arguments)); }, error: function () { hostLog(__fmt(arguments)); }, debug: function () {} };\n"
+    "var __timers = {}, __tn = 0;\n"
+    "function setTimeout(fn, ms) { var id = ++__tn; __timers[id] = { fn: fn, every: 0 }; __native_timer(id, +ms || 0); return id; }\n"
+    "function setInterval(fn, ms) { var id = ++__tn; __timers[id] = { fn: fn, every: +ms || 1 }; __native_timer(id, +ms || 1); return id; }\n"
+    "function clearTimeout(id) { delete __timers[id]; }\n"
+    "var clearInterval = clearTimeout;\n"
+    "function __timerFire(id) { var t = __timers[id]; if (!t) return; if (t.every) __native_timer(id, t.every); else delete __timers[id];\n"
+    "  try { t.fn(); } catch (e) { hostLog('timer: ' + e); } }\n"
+    "function fetch(url, o) { o = o || {};\n"
+    "  return fetchText(String(url), { method: o.method, headers: o.headers, body: o.body == null ? undefined : (typeof o.body === 'string' ? o.body : String(o.body)) }).then(function (r) {\n"
+    "    return { ok: r.status >= 200 && r.status < 300, status: r.status, url: String(url),\n"
+    "      text: function () { return Promise.resolve(r.text); }, json: function () { return Promise.resolve(JSON.parse(r.text)); } }; }); }\n"
+    "var __b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
+    "function btoa(s) { s = String(s); var o = '', i = 0, a, b, c;\n"
+    "  while (i < s.length) { a = s.charCodeAt(i++) & 255; b = i < s.length ? s.charCodeAt(i++) & 255 : -1; c = i < s.length ? s.charCodeAt(i++) & 255 : -1;\n"
+    "    o += __b64.charAt(a >> 2) + __b64.charAt(((a & 3) << 4) | (b < 0 ? 0 : b >> 4)) + (b < 0 ? '=' : __b64.charAt(((b & 15) << 2) | (c < 0 ? 0 : c >> 6))) + (c < 0 ? '=' : __b64.charAt(c & 63)); }\n"
+    "  return o; }\n"
+    "function atob(s) { s = String(s).replace(/[^A-Za-z0-9+\\/]/g, ''); var o = '', b = 0, n = 0, i;\n"
+    "  for (i = 0; i < s.length; i++) { b = ((b << 6) | __b64.indexOf(s.charAt(i))) & 65535; n += 6; if (n >= 8) { n -= 8; o += String.fromCharCode((b >> n) & 255); } }\n"
+    "  return o; }\n"
+    "function URLSearchParams(init) { var me = this, k; this.l = [];\n"
+    "  if (typeof init === 'string') init.replace(/^\\?/, '').split('&').forEach(function (p) { if (!p) return; var kv = p.split('=');\n"
+    "    me.l.push([decodeURIComponent(kv[0]), decodeURIComponent((kv[1] || '').replace(/\\+/g, ' '))]); });\n"
+    "  else if (init) for (k in init) this.l.push([k, String(init[k])]); }\n"
+    "URLSearchParams.prototype.append = function (k, v) { this.l.push([k, String(v)]); };\n"
+    "URLSearchParams.prototype.set = function (k, v) { this.l = this.l.filter(function (e) { return e[0] !== k; }); this.l.push([k, String(v)]); };\n"
+    "URLSearchParams.prototype.get = function (k) { for (var i = 0; i < this.l.length; i++) if (this.l[i][0] === k) return this.l[i][1]; return null; };\n"
+    "URLSearchParams.prototype.has = function (k) { return this.get(k) !== null; };\n"
+    "URLSearchParams.prototype.toString = function () { return this.l.map(function (e) { return encodeURIComponent(e[0]) + '=' + encodeURIComponent(e[1]); }).join('&'); };\n"
+    "var __rpcId = 0, __rpcPending = {};\n"
+    "function __rpcIn(line) { var m; try { m = typeof line === 'string' ? JSON.parse(line) : line; } catch (e) { return; }\n"
+    "  if (m && m.id != null && __rpcPending[m.id]) { var p = __rpcPending[m.id]; delete __rpcPending[m.id]; if (m.error) p[1](m.error); else p[0](m.result); } }\n"
+    "var writeLine = function (l) { __rpcIn(l); };\n"
+    "var send = writeLine, emit = writeLine, print = writeLine;\n"
+    "var process = { stdout: { write: function (l) { String(l).split('\\n').forEach(function (x) { if (x) __rpcIn(x); }); return true; } },\n"
+    "  argv: [], env: {}, platform: 'ios', on: function () {} };\n"
+    "var stdout = process.stdout;\n"
+    "function __adapt() {\n"
+    "  if (typeof handle === 'function') return;\n"
+    "  var m = module.exports, f = null, o = null, i, c, names, nm;\n"
+    "  var cands = [m, m && m.default, __global.plugin, __global.Plugin, __global.source, __global.exports === m ? null : __global.exports];\n"
+    "  for (i = 0; i < cands.length && !f; i++) { c = cands[i]; if (!c) continue;\n"
+    "    if (typeof c === 'function') { f = c; }\n"
+    "    else if (typeof c.handle === 'function') { f = c.handle; o = c; }\n"
+    "    else if (typeof c.handleRequest === 'function') { f = c.handleRequest; o = c; }\n"
+    "    else if (c.methods && typeof c.methods === 'object') { f = (function (mm) { return function (method, p) { var fn = mm[method]; if (!fn) throw new Error('method not found'); return fn.call(mm, p); }; })(c.methods); }\n"
+    "    else if (c.handlers && typeof c.handlers === 'object') { f = (function (mm) { return function (method, p) { var fn = mm[method]; if (!fn) throw new Error('method not found'); return fn.call(mm, p); }; })(c.handlers); } }\n"
+    "  if (!f && typeof __global.handleRequest === 'function') f = __global.handleRequest;\n"
+    "  if (!f && typeof __global.onRequest === 'function') f = __global.onRequest;\n"
+    "  if (!f && __global.methods && typeof __global.methods === 'object') f = (function (mm) { return function (method, p) { var fn = mm[method]; if (!fn) throw new Error('method not found'); return fn.call(mm, p); }; })(__global.methods);\n"
+    "  if (!f && __global.handlers && typeof __global.handlers === 'object') f = (function (mm) { return function (method, p) { var fn = mm[method]; if (!fn) throw new Error('method not found'); return fn.call(mm, p); }; })(__global.handlers);\n"
+    "  if (!f) { names = ['onMessage', 'onmessage', 'onLine', 'processLine', 'process_line', 'handleLine', 'handleMessage', 'rpc'];\n"
+    "    for (i = 0; i < names.length && !f; i++) { nm = names[i];\n"
+    "      if (typeof __global[nm] === 'function') { f = __global[nm]; o = null; }\n"
+    "      else if (m && typeof m[nm] === 'function') { f = m[nm]; o = m; } }\n"
+    "    if (f) f = (function (fn, owner) { return function (method, p) { return new Promise(function (res, rej) {\n"
+    "      var id = ++__rpcId, r; __rpcPending[id] = [res, rej];\n"
+    "      try { r = fn.call(owner, JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: p })); } catch (e) { delete __rpcPending[id]; return rej(e); }\n"
+    "      Promise.resolve(r).then(function (v) { if (v === undefined || v === null || v === '' || !__rpcPending[id]) return;\n"
+    "        delete __rpcPending[id]; var j = typeof v === 'string' ? JSON.parse(v) : v;\n"
+    "        if (j && j.error) rej(j.error); else res(j && j.jsonrpc ? j.result : j); }, rej); }); }; })(f, o); }\n"
+    "  if (f) { var fo = o, ff = f; __global.handle = function (method, p) { return ff.call(fo, method, p); }; } }\n"
+    "function __unwrap(r) { if (r && typeof r === 'object' && r.jsonrpc && !Array.isArray(r)) { if (r.error) throw r.error; if ('result' in r) return r.result; } return r; }\n"
+    "function __errText(e) {\n"
+    "  if (e && typeof e === 'object' && typeof e.code === 'number') {\n"
+    "    var base = { '-32001': 'Anmeldung nötig', '-32002': 'Nicht gefunden', '-32003': 'Nicht verfügbar', '-32004': 'Zu viele Anfragen, später erneut versuchen', '-32005': 'Netzwerkfehler' }[String(e.code)];\n"
+    "    var msg = e.message ? String(e.message) : '';\n"
+    "    var rs = e.data && e.data.restrictions ? ' [' + [].concat(e.data.restrictions).join(', ') + ']' : '';\n"
+    "    return (base ? base + (msg ? ': ' + msg : '') : (msg || ('Fehler ' + e.code))) + rs; }\n"
+    "  return String((e && e.message) || e); }\n"
+    "function __dispatch(id, method, paramsJson) {\n"
+    "  Promise.resolve().then(function () { return __unwrap(handle(method, JSON.parse(paramsJson))); })\n"
+    "   .then(function (r) { __native_reply(id, true, JSON.stringify(r === undefined ? null : r)); },\n"
+    "         function (e) { __native_reply(id, false, __errText(e)); }); }\n";
     [m_ctx evaluateScript:shim];
     [m_ctx evaluateScript:src];
-    if (firstError == nil && [[m_ctx[@"handle"] toString] hasPrefix:@"undefined"]) firstError = [@"Das Plugin definiert keine Funktion handle(method, params)." retain];
+    // ricercar-style scripts (module.exports.handle / methods / onMessage ...) are adapted to handle(method, params)
+    if (firstError == nil) [m_ctx evaluateScript:@"__adapt();"];
+    if (firstError == nil && [[m_ctx[@"handle"] toString] hasPrefix:@"undefined"]) firstError = [@"Das Plugin definiert weder handle(method, params) noch eine bekannte Ricercar-Schnittstelle (module.exports.handle, methods, onMessage ...)." retain];
     if (firstError != nil) {
         if (err != NULL) *err = [firstError autorelease];
         [self release];
@@ -196,7 +283,6 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 @end
 
 @interface RfxPluginHost : NSObject {
-    NSURL *m_base;
     RfxJSPlugin *m_js;
     int m_nextid;
     NSDictionary *m_caps;
@@ -206,7 +292,6 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 @property (nonatomic, retain) NSString *pluginId;
 @property (nonatomic, retain) NSDictionary *caps;
 @property (nonatomic, retain) NSString *pluginName;
-- (id)initWithBase:(NSURL *)base;
 - (id)initWithJS:(RfxJSPlugin *)js;
 - (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id result, NSString *err))done;
 - (void)initializeDone:(void (^)(NSString *err))done;
@@ -216,42 +301,89 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 @implementation RfxPluginHost
 @synthesize caps = m_caps, pluginName = m_pluginName, pluginId = m_pluginId;
 
-- (id)initWithBase:(NSURL *)base {
-    self = [super init];
-    if (self) { m_base = [base retain]; m_nextid = 1; }
-    return self;
-}
 - (id)initWithJS:(RfxJSPlugin *)js {
     self = [super init];
     if (self) { m_js = [js retain]; m_nextid = 1; }
     return self;
 }
-- (void)dealloc { [m_base release]; [m_js release]; [m_caps release]; [m_pluginName release]; [m_pluginId release]; [super dealloc]; }
+- (void)dealloc { [m_js release]; [m_caps release]; [m_pluginName release]; [m_pluginId release]; [super dealloc]; }
 
 - (BOOL)has:(NSString *)cap { return [[m_caps objectForKey:cap] boolValue]; }
 
-- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id, NSString *))done {
-    if (m_js != nil) { [m_js call:method params:params done:done]; return; }
-    NSDictionary *msg = [NSDictionary dictionaryWithObjectsAndKeys:@"2.0", @"jsonrpc", [NSNumber numberWithInt:m_nextid++], @"id",
-                         method, @"method", (params != nil ? params : [NSDictionary dictionary]), @"params", nil];
-    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"rpc" relativeToURL:m_base]];
-    [r setHTTPMethod:@"POST"];
-    [r setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    [r setHTTPBody:[NSJSONSerialization dataWithJSONObject:msg options:0 error:nil]];
-    [r setTimeoutInterval:70.0];
-    [[[NSURLSession sharedSession] dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        id result = nil; NSString *e = nil;
-        if (err != nil) e = [err localizedDescription];
-        else {
-            id o = (data != nil) ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            if (![o isKindOfClass:[NSDictionary class]]) e = @"Unlesbare Antwort der Brücke";
-            else if ([o objectForKey:@"error"] != nil) {
-                id er = [o objectForKey:@"error"];
-                e = [er isKindOfClass:[NSDictionary class]] ? [NSString stringWithFormat:@"%@", ([er objectForKey:@"message"] ? [er objectForKey:@"message"] : er)] : [NSString stringWithFormat:@"%@", er];
-            } else result = [o objectForKey:@"result"];
+// ricercar protocol 1 error codes as the plugin (bridge) reports them
+static NSString *RfxRpcErrorText(id er) {
+    if (![er isKindOfClass:[NSDictionary class]]) return [NSString stringWithFormat:@"%@", er];
+    NSString *msg = [[er objectForKey:@"message"] description];
+    NSString *base = nil;
+    switch ([[er objectForKey:@"code"] intValue]) {
+    case -32001: base = @"Anmeldung nötig"; break;
+    case -32002: base = @"Nicht gefunden"; break;
+    case -32003: base = @"Nicht verfügbar"; break;
+    case -32004: base = @"Zu viele Anfragen, später erneut versuchen"; break;
+    case -32005: base = @"Netzwerkfehler"; break;
+    }
+    NSString *t = (base != nil) ? ([msg length] ? [NSString stringWithFormat:@"%@: %@", base, msg] : base) : ([msg length] ? msg : @"Fehler");
+    id rs = [[er objectForKey:@"data"] isKindOfClass:[NSDictionary class]] ? [[er objectForKey:@"data"] objectForKey:@"restrictions"] : nil;
+    if ([rs isKindOfClass:[NSArray class]] && [rs count] > 0) t = [t stringByAppendingFormat:@" [%@]", [rs componentsJoinedByString:@", "]];
+    return t;
+}
+
+// Compatibility layer for ricercar plugins: the wire format is the same, but plugins differ in what they leave out.
+// Missing capabilities are assumed, a search answer without groups becomes one group, browse.root without sections gets
+// the plugin's library.* lists, browse.list on "library.*" is routed to that method, stream_url/uri count as url.
+- (id)Normalize:(NSString *)method result:(id)r {
+    if (![r isKindOfClass:[NSDictionary class]]) return r;
+    NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:r];
+    if ([method isEqualToString:@"initialize"]) {
+        if ([m objectForKey:@"capabilities"] == nil) {
+            [m setObject:[NSDictionary dictionaryWithObjectsAndKeys:@YES, @"auth", @YES, @"browse", @YES, @"search", @YES, @"resolve", nil] forKey:@"capabilities"];
         }
-        dispatch_async(dispatch_get_main_queue(), ^{ done(result, e); });
-    }] resume];
+        if ([m objectForKey:@"plugin"] == nil && [m objectForKey:@"name"] != nil)
+            [m setObject:[NSDictionary dictionaryWithObjectsAndKeys:[m objectForKey:@"name"], @"name", ([m objectForKey:@"id"] ? [m objectForKey:@"id"] : [m objectForKey:@"name"]), @"id", nil] forKey:@"plugin"];
+    } else if ([method isEqualToString:@"search"]) {
+        if ([m objectForKey:@"groups"] == nil && [[m objectForKey:@"items"] isKindOfClass:[NSArray class]])
+            [m setObject:[NSArray arrayWithObject:[NSDictionary dictionaryWithObjectsAndKeys:@"mixed", @"kind", [m objectForKey:@"items"], @"items", nil]] forKey:@"groups"];
+    } else if ([method isEqualToString:@"browse.root"]) {
+        if ([[m objectForKey:@"sections"] count] == 0) {
+            NSMutableArray *sec = [NSMutableArray array];
+            if ([self has:@"library"]) {
+                NSArray *lib = [NSArray arrayWithObjects:@"albums", @"Alben", @"tracks", @"Titel", @"playlists", @"Playlists", @"artists", @"Künstler", nil];
+                for (int i = 0; i + 1 < (int)[lib count]; i += 2)
+                    [sec addObject:[NSDictionary dictionaryWithObjectsAndKeys:[NSString stringWithFormat:@"library.%@", [lib objectAtIndex:i]], @"ref", @"folder", @"kind",
+                                    [lib objectAtIndex:i + 1], @"title", @NO, @"playable", @YES, @"browsable", nil]];
+            }
+            id home = [m objectForKey:@"home"];
+            if ([home isKindOfClass:[NSArray class]])
+                for (id h in home)
+                    if ([h isKindOfClass:[NSDictionary class]] && [[h objectForKey:@"ref"] isKindOfClass:[NSString class]] && [h objectForKey:@"title"] != nil)
+                        [sec addObject:[NSDictionary dictionaryWithObjectsAndKeys:[h objectForKey:@"ref"], @"ref", @"folder", @"kind", [h objectForKey:@"title"], @"title", @NO, @"playable", @YES, @"browsable", nil]];
+            if ([sec count] > 0) [m setObject:sec forKey:@"sections"];
+        }
+    } else if ([method isEqualToString:@"track.resolve"]) {
+        if ([m objectForKey:@"url"] == nil) {
+            id u = [m objectForKey:@"stream_url"]; if (u == nil) u = [m objectForKey:@"uri"]; if (u == nil) u = [m objectForKey:@"stream"];
+            if ([u isKindOfClass:[NSString class]]) [m setObject:u forKey:@"url"];
+        }
+    }
+    return m;
+}
+
+- (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id, NSString *))done {
+    NSString *m = method; NSDictionary *p = params;
+    NSString *ref = [params objectForKey:@"ref"];
+    if ([method isEqualToString:@"browse.list"] && [ref hasPrefix:@"library."]) {
+        m = ref;
+        p = [NSDictionary dictionaryWithObjectsAndKeys:([params objectForKey:@"offset"] ? [params objectForKey:@"offset"] : @0), @"offset",
+             ([params objectForKey:@"limit"] ? [params objectForKey:@"limit"] : @50), @"limit", nil];
+    }
+    void (^d)(id, NSString *) = [[done copy] autorelease];
+    [self rawCall:m params:p done:^(id r, NSString *e) { d((e == nil ? [self Normalize:method result:r] : r), e); }];
+}
+
+- (void)rawCall:(NSString *)method params:(NSDictionary *)params done:(void (^)(id, NSString *))done {
+    if (m_js != nil) { [m_js call:method params:params done:done]; return; }
+    // plugins only run inside the app (JavaScriptCore); there is no connection to outside processes
+    dispatch_async(dispatch_get_main_queue(), ^{ done(nil, @"Plugin nicht geladen."); });
 }
 
 - (void)initializeDone:(void (^)(NSString *))done {
@@ -274,6 +406,21 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 
 
 #pragma mark - plugin manager (autostart, search results in the normal search, import queue)
+
+// crossfade length (seconds), set in the dev menu; the original always used 5
+static float RfxCrossfadeSeconds(void) {
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCrossfade"];
+    float f = (v == nil) ? 5.0f : [v floatValue];
+    if (f != f || f < 1.0f) f = 1.0f;
+    if (f > 12.0f) f = 12.0f;
+    return f;
+}
+// long fades are shortened for very short songs so the next song is still queued in time
+static float RfxFadeForDuration(int dur) {
+    float l = RfxCrossfadeSeconds();
+    if (l > 5.0f) l = fminf(l, fmaxf(5.0f, ((float)dur - 6.0f) / 2.0f));
+    return l;
+}
 
 // Documents/Plugins is the one place for plugins. The app ships its plugins in the bundle (Plugins/) and copies each one
 // there on start if it is missing; existing files (your edits, keys you typed in) are never overwritten.
@@ -510,6 +657,7 @@ static RfxPluginManager *gRfxPM = nil;
         RfxToast([[RfxPluginPaths() allKeys] count] ? @"Kein Plugin geladen: Quellen > Autostart wählen." : @"Keine Plugins gefunden.");
     }
     if ([hosts count] == 0 || [text length] == 0 || done == nil) return;
+    __block BOOL hadErr = NO;
     __block int waiting = (int)[hosts count];
     NSMutableArray *all = [NSMutableArray array];
     for (NSString *n in hosts) {
@@ -528,8 +676,8 @@ static RfxPluginManager *gRfxPM = nil;
                     }
                 }
             }
-            if (e != nil) RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]);
-            if (--waiting == 0) { if ([all count] == 0) RfxToast(@"Plugin-Suche: keine Treffer."); [self BuildClips:all text:text done:done]; }
+            if (e != nil) { hadErr = YES; RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]); }
+            if (--waiting == 0) { if ([all count] == 0 && !hadErr) RfxToast(@"Plugin-Suche: keine Treffer."); [self BuildClips:all text:text done:done]; }
         }];
     }
 }
@@ -806,7 +954,6 @@ static RfxPluginManager *gRfxPM = nil;
     NSMutableArray *m_back;        // stack of NSDictionary {title, items}
     NSURLSessionDownloadTask *m_dltask;
     NSTimer *m_dltimer;
-    UIButton *m_cachebtn;
 }
 @end
 
@@ -835,19 +982,7 @@ static RfxPluginManager *gRfxPM = nil;
     [self Btn:@"Anmelden" x:252 y:y w:110 tag:2];
     [self Btn:@"Abmelden" x:372 y:y w:110 tag:3];
     [self Btn:@"Zurück" x:492 y:y w:90 tag:4];
-    m_cachebtn = [self Btn:@"" x:592 y:y w:190 tag:5];
-    [self UpdateCacheButton];
     y += 50.0f;
-    m_addr = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
-    [m_addr setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
-    [m_addr setBorderStyle:UITextBorderStyleRoundedRect];
-    [m_addr setPlaceholder:@"Leer lassen = Plugins im Ordner Plugins. Oder Adresse einer Plugin-Brücke"];
-    [m_addr setKeyboardType:UIKeyboardTypeURL];
-    [m_addr setAutocapitalizationType:UITextAutocapitalizationTypeNone];
-    [m_addr setAutocorrectionType:UITextAutocorrectionTypeNo];
-    [m_addr setText:[[NSUserDefaults standardUserDefaults] stringForKey:@"RfxBridgeURL"]];
-    [self addSubview:m_addr]; [m_addr release];
-    y += 44.0f;
     m_query = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
     [m_query setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
     [m_query setBorderStyle:UITextBorderStyleRoundedRect];
@@ -879,10 +1014,6 @@ static RfxPluginManager *gRfxPM = nil;
     [super dealloc];
 }
 
-- (void)UpdateCacheButton {
-    [m_cachebtn setTitle:@"Plugins an/aus" forState:UIControlStateNormal];
-}
-
 - (void)Say:(NSString *)t { [m_status setText:t]; }
 
 - (void)Alert:(NSString *)title msg:(NSString *)msg {
@@ -900,45 +1031,12 @@ static RfxPluginManager *gRfxPM = nil;
     case 2: [self SignIn]; break;
     case 3: [self SignOut]; break;
     case 4: [self GoBack]; break;
-    case 5: [self ShowAutostart]; break;
     }
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; [self Search]; return YES; }
 
-// which plugins are loaded when the app starts (and take part in the normal search)
-- (void)ShowAutostart {
-    RfxPluginManager *pm = [RfxPluginManager shared];
-    NSArray *names = [pm AllNames];
-    NSMutableString *msg = [NSMutableString stringWithString:@"AN = wird beim Start geladen und sucht in der normalen Suche mit.\nAUS = bleibt inaktiv.\nTippe ein Plugin an, um es umzuschalten."];
-    if ([names count] == 0) [msg appendString:@"\n\nKeine Plugins gefunden. Eigene Plugins (.js) gehören in den Ordner Plugins der App (Dateien-App)."];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugins" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    for (NSString *n in names) {
-        BOOL on = [pm IsAutostart:n];
-        NSString *label = [NSString stringWithFormat:@"%@   %@", (on ? @"\u25CF AN " : @"\u25CB AUS"), n];
-        [ac addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-                [pm SetAutostart:!on forName:n];
-                [self Say:[NSString stringWithFormat:@"%@ ist jetzt %@.", n, (!on ? @"AN (geladen, auch beim nächsten Start)" : @"AUS (entladen, beim Start nicht geladen)")]];
-                [self ShowAutostart];
-            }]];
-    }
-    [ac addAction:[UIAlertAction actionWithTitle:@"Fertig" style:UIAlertActionStyleCancel handler:nil]];
-    UIViewController *vc = [[[UIApplication sharedApplication] keyWindow] rootViewController];
-    while ([vc presentedViewController] != nil) vc = [vc presentedViewController];
-    [vc presentViewController:ac animated:YES completion:nil];
-}
-
-- (void)Connect {
-    NSString *a = [[m_addr text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if ([a length] == 0) { [self PickPlugin]; return; }
-    if (![a hasSuffix:@"/"]) a = [a stringByAppendingString:@"/"];
-    NSURL *u = [NSURL URLWithString:a];
-    if (u == nil) { [self Say:@"Ungültige Adresse."]; return; }
-    [[NSUserDefaults standardUserDefaults] setObject:[m_addr text] forKey:@"RfxBridgeURL"];
-    [m_host release];
-    m_host = [[RfxPluginHost alloc] initWithBase:u];
-    [self StartHost];
-}
+- (void)Connect { [self PickPlugin]; }
 
 - (void)StartHost {
     [self Say:@"Verbinde ..."];
@@ -1234,6 +1332,7 @@ static RfxPluginManager *gRfxPM = nil;
         m_songcounter = 0;
         m_jingleindex = 0;
         m_crossfadetime = 5.0f;
+        m_curfade = 5.0f;
         m_playingjingle = NO;
         m_stopsecondthread = NO;
         m_enableddebuggingtext = NO;
@@ -1470,11 +1569,14 @@ static RfxPluginManager *gRfxPM = nil;
     [ov setTag:7741];
     [ov setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.94f]];
     [ov setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:b];
+    [sv setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    [ov addSubview:sv];
     float cx = b.size.width * 0.5f, y = 70.0f, rowW = 560.0f;
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW, 34.0f)];
     [title setText:@"Dev-Menü"]; [title setTextColor:[UIColor whiteColor]]; [title setBackgroundColor:[UIColor clearColor]];
     [title setFont:[UIFont systemFontOfSize:26.0f]]; [title setTextAlignment:NSTextAlignmentCenter];
-    [ov addSubview:title]; [title release];
+    [sv addSubview:title]; [title release];
     y += 70.0f;
     NSArray *rows = [NSArray arrayWithObjects:
         [NSArray arrayWithObjects:@"Schwarzer Rahmen um die Cover", @"RfxDevCoverBorder", [NSNumber numberWithInt:1], nil],
@@ -1485,44 +1587,84 @@ static RfxPluginManager *gRfxPM = nil;
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
         [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
         [l setFont:[UIFont systemFontOfSize:19.0f]];
-        [ov addSubview:l]; [l release];
+        [sv addSubview:l]; [l release];
         UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(cx + rowW * 0.5f - 51.0f, y, 51.0f, 31.0f)];
         id pref = [[NSUserDefaults standardUserDefaults] objectForKey:[r objectAtIndex:1]];
         BOOL on = (pref == nil) ? ([[r objectAtIndex:2] intValue] == 1) : [pref boolValue];
         [sw setOn:on];
         [sw setTag:7750 + [[r objectAtIndex:2] intValue]];
         [sw addTarget:self action:@selector(DevSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-        [ov addSubview:sw]; [sw release];
-        y += 52.0f;
+        [sv addSubview:sw]; [sw release];
+        y += 46.0f;
     }
     {
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, 230.0f, 31.0f)];
         [l setText:@"Rahmenbreite"]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
         [l setFont:[UIFont systemFontOfSize:19.0f]];
-        [ov addSubview:l]; [l release];
+        [sv addSubview:l]; [l release];
         UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f + 240.0f, y, rowW - 240.0f, 31.0f)];
         [sl setMinimumValue:0.0f]; [sl setMaximumValue:8.0f];
         id wp = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCoverBorderWidth"];
         [sl setValue:(wp == nil ? 2.0f : [wp floatValue])];
         [sl setTag:7760];
         [sl addTarget:self action:@selector(DevSliderDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
-        [ov addSubview:sl]; [sl release];
+        [sv addSubview:sl]; [sl release];
         y += 52.0f;
+    }
+    {
+        float cf = RfxCrossfadeSeconds();
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, 230.0f, 31.0f)];
+        [l setTag:7762];
+        [l setText:[NSString stringWithFormat:@"Überblendzeit %.1f s", cf]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
+        [l setFont:[UIFont systemFontOfSize:19.0f]];
+        [sv addSubview:l]; [l release];
+        UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f + 240.0f, y, rowW - 240.0f, 31.0f)];
+        [sl setMinimumValue:1.0f]; [sl setMaximumValue:12.0f];
+        [sl setValue:cf];
+        [sl setTag:7761];
+        [sl addTarget:self action:@selector(DevSliderMoved:) forControlEvents:UIControlEventValueChanged];
+        [sl addTarget:self action:@selector(DevSliderDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+        [sv addSubview:sl]; [sl release];
+        y += 46.0f;
+    }
+    {
+        NSArray *names = [[RfxPluginManager shared] AllNames];
+        UILabel *h = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y + 8.0f, rowW, 26.0f)];
+        [h setText:([names count] ? @"Plugins (Ordner Plugins in der Dateien-App)" : @"Keine Plugins im Ordner Plugins gefunden")];
+        [h setTextColor:[UIColor colorWithWhite:0.7f alpha:1.0f]]; [h setBackgroundColor:[UIColor clearColor]];
+        [h setFont:[UIFont systemFontOfSize:15.0f]];
+        [sv addSubview:h]; [h release];
+        y += 40.0f;
+        for (int i = 0; i < (int)[names count]; i++) {
+            NSString *n = [names objectAtIndex:i];
+            UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
+            [l setText:n]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
+            [l setFont:[UIFont systemFontOfSize:19.0f]];
+            [sv addSubview:l]; [l release];
+            UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(cx + rowW * 0.5f - 51.0f, y, 51.0f, 31.0f)];
+            [sw setOn:[[RfxPluginManager shared] IsAutostart:n]];
+            [sw setTag:7800 + i];
+            [sw addTarget:self action:@selector(DevPluginChanged:) forControlEvents:UIControlEventValueChanged];
+            [sv addSubview:sw]; [sw release];
+            y += 46.0f;
+        }
     }
     UILabel *info = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y + 10.0f, rowW, 40.0f)];
     [info setTag:7746];
     [info setText:(m_lastrateinfo != nil ? m_lastrateinfo : @"Sample-Rate: -")];
     [info setTextColor:[UIColor colorWithWhite:0.8f alpha:1.0f]]; [info setBackgroundColor:[UIColor clearColor]];
     [info setFont:[UIFont fontWithName:@"Courier" size:14.0f]]; [info setNumberOfLines:2];
-    [ov addSubview:info]; [info release];
+    [sv addSubview:info]; [info release];
     {
         UIButton *qb = [UIButton buttonWithType:UIButtonTypeSystem];
         [qb setFrame:CGRectMake(cx - rowW * 0.5f, y + 60.0f, rowW, 44.0f)];
-        [qb setTitle:@"Quellen (Plugins) öffnen" forState:UIControlStateNormal];
+        [qb setTitle:@"Quellen durchsuchen / anmelden" forState:UIControlStateNormal];
         [[qb titleLabel] setFont:[UIFont systemFontOfSize:19.0f]];
         [qb addTarget:self action:@selector(OpenSourcesPanel) forControlEvents:UIControlEventTouchUpInside];
-        [ov addSubview:qb];
+        [sv addSubview:qb];
     }
+    [sv setContentSize:CGSizeMake(b.size.width, y + 140.0f)];
+    [sv release];
     UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
     [x setFrame:CGRectMake(b.size.width - 70.0f, 20.0f, 50.0f, 50.0f)];
     [x setTitle:@"\u2715" forState:UIControlStateNormal];
@@ -1530,7 +1672,7 @@ static RfxPluginManager *gRfxPM = nil;
     [[x titleLabel] setFont:[UIFont systemFontOfSize:26.0f]];
     [x setAutoresizingMask:UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin];
     [x addTarget:self action:@selector(CloseDevMenu) forControlEvents:UIControlEventTouchUpInside];
-    [ov addSubview:x];
+    [sv addSubview:x];
     [self addSubview:ov];
     [ov release];
 }
@@ -1571,10 +1713,31 @@ static RfxPluginManager *gRfxPM = nil;
     [self bringSubviewToFront:[self viewWithTag:7741]];
 }
 
+- (void)DevSliderMoved:(UISlider *)sl {
+    if ([sl tag] != 7761) return;
+    UILabel *l = (UILabel *)[[self viewWithTag:7741] viewWithTag:7762];
+    [l setText:[NSString stringWithFormat:@"Überblendzeit %.1f s", [sl value]]];
+}
+
 - (void)DevSliderDone:(UISlider *)sl {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if ([sl tag] == 7761) {
+        // takes effect with the next song (the timers of the running song are already set)
+        [d setFloat:roundf([sl value] * 2.0f) / 2.0f forKey:@"RfxDevCrossfade"]; [d synchronize];
+        return;
+    }
     [d setFloat:[sl value] forKey:@"RfxDevCoverBorderWidth"]; [d synchronize];
     [m_glv RefreshCoverTextures];
+}
+
+// one switch per detected plugin script (Documents/Plugins/*.js)
+- (void)DevPluginChanged:(UISwitch *)sw {
+    NSArray *names = [[RfxPluginManager shared] AllNames];
+    int i = (int)[sw tag] - 7800;
+    if (i < 0 || i >= (int)[names count]) return;
+    NSString *n = [names objectAtIndex:i];
+    [[RfxPluginManager shared] SetAutostart:[sw isOn] forName:n];
+    RfxToast([NSString stringWithFormat:@"%@: %@", n, ([sw isOn] ? @"an (geladen, auch beim nächsten Start)" : @"aus")]);
 }
 
 - (void)OpenSourcesPanel {
@@ -2445,7 +2608,7 @@ static void RemoveClipViews(ClipObject *c) {
         [self setM_presongInitTime:-1.0];
         [self performSelector:@selector(CheckNextSong:)
                    withObject:[NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithInt:0], @"how",
-                                                [NSNumber numberWithFloat:5.0f], @"time", nil]
+                                                [NSNumber numberWithFloat:m_curfade], @"time", nil]
                    afterDelay:0.01];
     }
 }
@@ -3707,12 +3870,13 @@ static void KV_PlayStatus(NSString *text) {
 
 - (void)StartPresongTimer:(int)presongTimer {
     if (presongTimer < 0xb) return;
-    [self setM_presongDuration:(double)(float)((double)presongTimer - 7.0)];
+    [self setM_presongDuration:(double)(float)((double)presongTimer - fmax(7.0, (double)RfxFadeForDuration(presongTimer) + 2.0))];
     [self setM_presongInitTime:CACurrentMediaTime()];
 }
 
 - (void)StartCrossFadeTimer:(int)crossFadeTimer {
-    [self setM_crossfadeDuration:(double)(float)((double)crossFadeTimer - 5.0)];
+    m_curfade = RfxFadeForDuration(crossFadeTimer);
+    [self setM_crossfadeDuration:(double)(float)((double)crossFadeTimer - (double)m_curfade)];
     [self setM_crossfadeInitTime:CACurrentMediaTime()];
 }
 
