@@ -1095,10 +1095,13 @@ static RfxPluginManager *gRfxPM = nil;
     if (m_host == nil || ![m_host has:@"auth"]) { [self Say:@"Erst verbinden (das Plugin braucht die Fähigkeit \"auth\")."]; return; }
     [m_host call:@"auth.begin" params:nil done:^(id r, NSString *e) {
         if (e != nil) { [self Alert:@"Anmeldung" msg:e]; return; }
-        NSString *url = [r objectForKey:@"url"];
-        NSString *ins = [r objectForKey:@"instructions"];
+        if (![r isKindOfClass:[NSDictionary class]]) { [self Alert:@"Anmeldung" msg:@"Unerwartete Antwort des Plugins."]; return; }
+        id uo = [r objectForKey:@"url"];   // JS null arrives as NSNull, not nil
+        id io = [r objectForKey:@"instructions"];
+        NSString *url = ([uo isKindOfClass:[NSString class]] && [uo length] > 0) ? uo : nil;
+        NSString *ins = [io isKindOfClass:[NSString class]] ? io : nil;
         BOOL needInput = [[r objectForKey:@"expects_input"] boolValue];
-        if (url != nil) [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
+        if (url != nil && [NSURL URLWithString:url] != nil) [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Anmeldung"
             message:[NSString stringWithFormat:@"%@\n\n%@%@",
                      (ins != nil ? ins : @""), (url != nil ? @"Die Seite wurde im Browser geöffnet. Füge hier den Code oder die Adresse ein, die du bekommst." : @"Gib hier ein, was das Plugin verlangt."),
