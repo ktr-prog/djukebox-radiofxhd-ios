@@ -275,14 +275,26 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
 
 #pragma mark - plugin manager (autostart, search results in the normal search, import queue)
 
-static NSDictionary *RfxPluginPaths(void) {
+// Documents/Plugins is the one place for plugins. The app ships its plugins in the bundle (Plugins/) and copies each one
+// there on start if it is missing; existing files (your edits, keys you typed in) are never overwritten.
+// To get a fresh copy of a shipped plugin, delete its file in the Files app.
+static NSString *RfxPluginDir(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
     NSString *pdir = [docs stringByAppendingPathComponent:@"Plugins"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *shipped = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"Plugins"];
+    for (NSString *f in [fm contentsOfDirectoryAtPath:shipped error:nil]) {
+        if ([[f pathExtension] caseInsensitiveCompare:@"js"] != NSOrderedSame) continue;
+        NSString *dst = [pdir stringByAppendingPathComponent:f];
+        if (![fm fileExistsAtPath:dst]) [fm copyItemAtPath:[shipped stringByAppendingPathComponent:f] toPath:dst error:nil];
+    }
+    return pdir;
+}
+
+static NSDictionary *RfxPluginPaths(void) {
+    NSString *pdir = RfxPluginDir();
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
-    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
-        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"])
-            [d setObject:p forKey:[[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""]];
     for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pdir error:nil])
         if ([[f pathExtension] caseInsensitiveCompare:@"js"] == NSOrderedSame)
             [d setObject:[pdir stringByAppendingPathComponent:f] forKey:[f stringByDeletingPathExtension]];
@@ -429,15 +441,11 @@ static RfxPluginManager *gRfxPM = nil;
 
 - (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
 
-// never configured: the plugins shipped inside the app (public sources, no sign-in) are on
+// never configured: only the public archive plugin is on; everything else (Qobuz needs your keys) you switch on yourself
 - (NSArray *)AutostartList {
     NSArray *a = [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"];
     if (a != nil) return a;
-    NSMutableArray *d = [NSMutableArray array];
-    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
-        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"])
-            [d addObject:[[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""]];
-    return d;
+    return [NSArray arrayWithObject:@"archive"];
 }
 - (BOOL)IsAutostart:(NSString *)name { return [[self AutostartList] containsObject:name]; }
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
@@ -833,7 +841,7 @@ static RfxPluginManager *gRfxPM = nil;
     m_addr = [[UITextField alloc] initWithFrame:CGRectMake(12, y, W - 24, 36)];
     [m_addr setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
     [m_addr setBorderStyle:UITextBorderStyleRoundedRect];
-    [m_addr setPlaceholder:@"Leer lassen = Plugins in der App. Oder Adresse einer Plugin-Brücke"];
+    [m_addr setPlaceholder:@"Leer lassen = Plugins im Ordner Plugins. Oder Adresse einer Plugin-Brücke"];
     [m_addr setKeyboardType:UIKeyboardTypeURL];
     [m_addr setAutocapitalizationType:UITextAutocapitalizationTypeNone];
     [m_addr setAutocorrectionType:UITextAutocorrectionTypeNo];
@@ -942,20 +950,14 @@ static RfxPluginManager *gRfxPM = nil;
     }];
 }
 
-// plugins inside the app: rfxplugin-*.js in the app bundle and *.js in Documents/Plugins (Files app)
+// plugins: every *.js in Documents/Plugins (Files app > Radio.fx > Plugins)
 - (void)PickPlugin {
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-    NSString *pdir = [docs stringByAppendingPathComponent:@"Plugins"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
-    NSMutableArray *paths = [NSMutableArray array];
-    for (NSString *p in [[NSBundle mainBundle] pathsForResourcesOfType:@"js" inDirectory:nil])
-        if ([[p lastPathComponent] hasPrefix:@"rfxplugin-"]) [paths addObject:p];
-    for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pdir error:nil])
-        if ([[f pathExtension] caseInsensitiveCompare:@"js"] == NSOrderedSame) [paths addObject:[pdir stringByAppendingPathComponent:f]];
+    NSDictionary *all = RfxPluginPaths();
+    NSArray *names = [[all allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Plugin wählen"
-        message:@"Eigene Plugins (.js) kommen in den Ordner Plugins der App (Dateien-App)." preferredStyle:UIAlertControllerStyleAlert];
-    for (NSString *p in paths) {
-        NSString *name = [[[p lastPathComponent] stringByDeletingPathExtension] stringByReplacingOccurrencesOfString:@"rfxplugin-" withString:@""];
+        message:@"Die Plugins liegen im Ordner Plugins der App (Dateien-App). Dort kannst du sie auch bearbeiten." preferredStyle:UIAlertControllerStyleAlert];
+    for (NSString *name in names) {
+        NSString *p = [all objectForKey:name];
         [ac addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [self ConnectJS:p name:name]; }]];
     }
     [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
