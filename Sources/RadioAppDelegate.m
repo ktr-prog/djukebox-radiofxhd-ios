@@ -67,6 +67,8 @@ int gv_kioskflag = 0;
 #pragma mark - launching
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    // volume button is off by default (dev menu can switch it on)
+    [[NSUserDefaults standardUserDefaults] registerDefaults:[NSDictionary dictionaryWithObject:[NSNumber numberWithBool:YES] forKey:@"RfxDevNoVolume"]];
     m_canRotateiPad = YES;
     m_loadeddefaultvalues = NO;
     sendedDeviceToken = NO;

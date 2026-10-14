@@ -590,6 +590,9 @@ static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
     RfxPluginHost *m_playHost;          // plugin of the stream that is playing (for play reports)
     NSString *m_playRef;
     double m_playStart;
+    NSTimer *m_stimer;                  // search progress bar (animated while a search is pending)
+    double m_st0;
+    NSString *m_sphase;
 }
 @end
 
@@ -666,12 +669,32 @@ static RfxPluginManager *gRfxPM = nil;
 
 #pragma mark search
 
+// progress bar for the plugin search: the bar creeps forward while the search / cover loading runs, then disappears
+- (void)SearchBusy:(NSString *)phase {
+    [m_sphase release]; m_sphase = [phase copy];
+    if (m_stimer == nil) {
+        m_st0 = CACurrentMediaTime();
+        m_stimer = [NSTimer scheduledTimerWithTimeInterval:0.1 target:self selector:@selector(SearchTick) userInfo:nil repeats:YES];
+    }
+    [self SearchTick];
+}
+- (void)SearchTick {
+    double t = CACurrentMediaTime() - m_st0;
+    RfxProgress(m_sphase ? m_sphase : @"Suche ...", (float)(0.9 * (1.0 - exp(-t / 2.5))));
+}
+- (void)SearchIdle {
+    [m_stimer invalidate]; m_stimer = nil;
+    [m_sphase release]; m_sphase = nil;
+    RfxProgressHide();
+}
+
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
     NSString *t = [[text copy] autorelease];
     void (^d)(NSString *, NSArray *) = [[done copy] autorelease];
     dispatch_async(dispatch_get_main_queue(), ^{
         [m_pendText release]; m_pendText = [t retain];
         [m_pendDone release]; m_pendDone = [d copy];
+        if ([t length] > 1 && [m_hosts count] > 0) [self SearchBusy:[NSString stringWithFormat:@"Suche '%@' ...", t]]; else [self SearchIdle];
         [m_deb invalidate];
         m_deb = [NSTimer scheduledTimerWithTimeInterval:0.8 target:self selector:@selector(FireSearch) userInfo:nil repeats:NO];
     });
@@ -688,6 +711,7 @@ static RfxPluginManager *gRfxPM = nil;
         RfxToast([[RfxPluginPaths() allKeys] count] ? @"Kein Plugin geladen: Quellen > Autostart wählen." : @"Keine Plugins gefunden.");
     }
     if ([hosts count] == 0 || [text length] == 0 || done == nil) {
+        [self SearchIdle];
         if ([text length] > 1) RfxToast([NSString stringWithFormat:@"Plugin-Suche: %d Plugin(s) geladen, done=%d", (int)[hosts count], done != nil]);
         return;
     }
@@ -697,12 +721,12 @@ static RfxPluginManager *gRfxPM = nil;
     NSMutableArray *all = [NSMutableArray array];
     for (NSString *n in hosts) {
         RfxPluginHost *h = [m_hosts objectForKey:n];
-        NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:text, @"query", [NSArray arrayWithObjects:@"album", @"track", nil], @"kinds",
-                           [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:12], @"limit", nil];
+        NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:text, @"query", [NSArray arrayWithObjects:@"track", nil], @"kinds",
+                           [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:20], @"limit", nil];
         [h call:@"search" params:p done:^(id r, NSString *e) {
             if (e == nil && [r isKindOfClass:[NSDictionary class]]) {
                 for (NSDictionary *g in [r objectForKey:@"groups"]) {
-                    if ([[g objectForKey:@"kind"] isEqualToString:@"artist"] || [[g objectForKey:@"kind"] isEqualToString:@"playlist"]) continue;
+                    if (![[g objectForKey:@"kind"] isEqualToString:@"track"]) continue;       // single titles only: no albums, artists, playlists
                     for (NSDictionary *it in [g objectForKey:@"items"]) {
                         NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:it];
                         [m setObject:n forKey:@"_plugin"];
@@ -713,7 +737,12 @@ static RfxPluginManager *gRfxPM = nil;
             }
             if (e == nil) RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: Antwort ok (%d Gruppen)", n, [r isKindOfClass:[NSDictionary class]] ? (int)[[r objectForKey:@"groups"] count] : -1]);
             if (e != nil) { hadErr = YES; RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]); }
-            if (--waiting == 0) { if ([all count] == 0 && !hadErr) RfxToast(@"Plugin-Suche: keine Treffer."); [self BuildClips:all text:text done:done]; }
+            if (--waiting == 0) {
+                if ([all count] == 0 && !hadErr) RfxToast(@"Plugin-Suche: keine Treffer.");
+                if ([all count] == 0) { [self SearchIdle]; done(text, [NSArray array]); return; }
+                [self SearchBusy:@"Lade Cover ..."];
+                [self BuildClips:all text:text done:^(NSString *tx, NSArray *clips) { [self SearchIdle]; done(tx, clips); }];
+            }
         }];
     }
 }
