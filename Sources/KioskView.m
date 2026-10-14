@@ -680,12 +680,12 @@ static RfxPluginManager *gRfxPM = nil;
 }
 - (void)SearchTick {
     double t = CACurrentMediaTime() - m_st0;
-    RfxProgress(m_sphase ? m_sphase : @"Suche ...", (float)(0.9 * (1.0 - exp(-t / 2.5))));
+    [[[m_kv m_glv] GetKBView] SetSearchProgress:(float)(0.9 * (1.0 - exp(-t / 2.5))) label:(m_sphase ? m_sphase : @"Suche ...")];
 }
 - (void)SearchIdle {
     [m_stimer invalidate]; m_stimer = nil;
     [m_sphase release]; m_sphase = nil;
-    RfxProgressHide();
+    [[[m_kv m_glv] GetKBView] SetSearchProgress:-1.0f label:nil];
 }
 
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
@@ -694,7 +694,7 @@ static RfxPluginManager *gRfxPM = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         [m_pendText release]; m_pendText = [t retain];
         [m_pendDone release]; m_pendDone = [d copy];
-        if ([t length] > 1 && [m_hosts count] > 0) [self SearchBusy:[NSString stringWithFormat:@"Suche '%@' ...", t]]; else [self SearchIdle];
+        if ([t length] > 1 && [m_hosts count] > 0) [self SearchBusy:@"Suche ..."]; else [self SearchIdle];
         [m_deb invalidate];
         m_deb = [NSTimer scheduledTimerWithTimeInterval:0.8 target:self selector:@selector(FireSearch) userInfo:nil repeats:NO];
     });
@@ -712,10 +712,8 @@ static RfxPluginManager *gRfxPM = nil;
     }
     if ([hosts count] == 0 || [text length] == 0 || done == nil) {
         [self SearchIdle];
-        if ([text length] > 1) RfxToast([NSString stringWithFormat:@"Plugin-Suche: %d Plugin(s) geladen, done=%d", (int)[hosts count], done != nil]);
         return;
     }
-    RfxToast([NSString stringWithFormat:@"Plugin-Suche '%@' läuft (%d Plugin)", text, (int)[hosts count]]);
     __block BOOL hadErr = NO;
     __block int waiting = (int)[hosts count];
     NSMutableArray *all = [NSMutableArray array];
@@ -730,15 +728,17 @@ static RfxPluginManager *gRfxPM = nil;
                     for (NSDictionary *it in [g objectForKey:@"items"]) {
                         NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:it];
                         [m setObject:n forKey:@"_plugin"];
+                        if ([h pluginName] != nil) {      // short source name (text before a bracket) shown under the title
+                            NSString *sn = [[[h pluginName] componentsSeparatedByString:@" ("] objectAtIndex:0];
+                            if ([sn length]) [m setObject:sn forKey:@"_source"];
+                        }
                         if ([m objectForKey:@"kind"] == nil) [m setObject:[g objectForKey:@"kind"] forKey:@"kind"];
                         [all addObject:m];
                     }
                 }
             }
-            if (e == nil) RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: Antwort ok (%d Gruppen)", n, [r isKindOfClass:[NSDictionary class]] ? (int)[[r objectForKey:@"groups"] count] : -1]);
             if (e != nil) { hadErr = YES; RfxToast([NSString stringWithFormat:@"Plugin-Suche %@: %@", n, e]); }
             if (--waiting == 0) {
-                if ([all count] == 0 && !hadErr) RfxToast(@"Plugin-Suche: keine Treffer.");
                 if ([all count] == 0) { [self SearchIdle]; done(text, [NSArray array]); return; }
                 [self SearchBusy:@"Lade Cover ..."];
                 [self BuildClips:all text:text done:^(NSString *tx, NSArray *clips) { [self SearchIdle]; done(tx, clips); }];
@@ -794,6 +794,9 @@ static RfxPluginManager *gRfxPM = nil;
             NSString *extra = isTrack ? @"" : ([[it objectForKey:@"track_count"] intValue] > 0 ?
                 [NSString stringWithFormat:@" · Album, %d Titel", [[it objectForKey:@"track_count"] intValue]] : @" · Album");
             [c setM_title:([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")];
+            NSString *srcname = [it objectForKey:@"_source"];
+            if ([srcname isKindOfClass:[NSString class]] && [srcname length])
+                extra = [extra stringByAppendingFormat:@"  ·  %@", srcname];
             [c setM_interpret:[artist stringByAppendingString:extra]];
             [c setM_albumname:([it objectForKey:@"album"] && [[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
             [c setM_picturepath:[sp objectForKey:@"pic"]];
@@ -810,7 +813,6 @@ static RfxPluginManager *gRfxPM = nil;
 #pragma mark import
 
 - (void)ImportClip:(ClipObject *)co {
-    RfxToast([NSString stringWithFormat:@"Plugin-Treffer: %@", [co m_title]]);
     NSData *j = [[co m_information] dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *it = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
     RfxPluginHost *h = [m_hosts objectForKey:[it objectForKey:@"_plugin"]];
@@ -861,7 +863,6 @@ static RfxPluginManager *gRfxPM = nil;
         [self Pump];
         return;
     }
-    RfxToast([NSString stringWithFormat:@"Lese %@ ...", [it objectForKey:@"title"]]);
     NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:500], @"limit", nil];
     NSString *album = [it objectForKey:@"title"];
     [h call:@"browse.list" params:p done:^(id r, NSString *e) {
@@ -957,7 +958,11 @@ static RfxPluginManager *gRfxPM = nil;
                     [wglv ClearWater]; [wglv RemovePluginPlaceholder:wid];
                 } else {
                     [wglv SetWaterForClipID:wid level:1.0f];
-                    if (stream) { [wglv SetFilepath:file forPluginClipID:wid]; [self QueueStreamed:it file:file cover:cover]; }
+                    if (stream) {
+                        [wglv SetFilepath:file forPluginClipID:wid];
+                        [self QueueStreamed:it file:file cover:cover];
+                        if ([[NSFileManager defaultManager] fileExistsAtPath:cover]) [wglv SetPicture:cover forPluginClipID:wid];
+                    }
                     else { m_anyImport = YES; [wglv RemovePluginPlaceholder:wid]; }
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [wglv ClearWater]; });
                 }
@@ -1056,7 +1061,6 @@ static RfxPluginManager *gRfxPM = nil;
     if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];
     if (queue && c != nil) [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
     [c release]; [folder release];
-    RfxToast(queue ? @"Zur Bibliothek hinzugefügt und eingereiht." : @"Zur Bibliothek hinzugefügt (Ordner Imported).");
 }
 @end
 

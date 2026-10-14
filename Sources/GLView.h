@@ -368,6 +368,7 @@
 // Plugin titles that are being loaded: the cover shows water that fills up from the bottom (level 0..1)
 - (void)SetWaterForClipID:(long long)cid level:(float)level;
 - (void)ClearWater;
+- (void)SetPicture:(NSString *)path forPluginClipID:(long long)cid;
 - (void)RemovePluginPlaceholder:(long long)cid;
 - (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid;
 - (void)LabelAni:(id)labelAni;

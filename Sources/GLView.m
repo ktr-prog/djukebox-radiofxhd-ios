@@ -1426,6 +1426,19 @@ static BOOL gRfxWaterOn = NO;
 }
 
 // the file of a title that was loaded: from now on the cover in the coverflow is a normal playable cover
+// the real cover of a title arrived: set it on the tile and let the texture be built again
+- (void)SetPicture:(NSString *)path forPluginClipID:(long long)cid {
+    [self GetArrayLock:NO];
+    for (ClipObject *c in [self m_origarray]) {
+        if ([c ID] == cid && [c m_folderid] == -88) {
+            [c setM_picturepath:path];
+            [cache removeObjectwithkey:[DEL CreateTextureKey:c]];
+        }
+    }
+    [m_arraylock unlock];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self ReInitThread]; [self drawView]; });
+}
+
 - (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid {
     [self GetArrayLock:NO];
     NSArray *lists = [NSArray arrayWithObjects:[self m_tilearray], [self m_origarray], nil];

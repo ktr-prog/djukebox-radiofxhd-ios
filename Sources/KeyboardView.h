@@ -21,6 +21,7 @@
     NSMutableArray *m_videothek;
 }
 - (void)Setup:(int)setup;
+- (int)RowCount;
 - (void)SetParent:(KeyboardView *)parent;
 - (void)SetKioskPointer:(KioskView *)kiosk;
 - (void)SetBackColor;
@@ -132,11 +133,13 @@
 - (void)SetPicThreadStarted:(int)picThreadStarted withval:(BOOL)val;
 - (void)SetImagesOnSlider:(UISlider *)imagesOnSlider;
 - (void)SetResortFlag:(int)resortFlag withval:(BOOL)val;
+- (void)SetSearchProgress:(float)fraction label:(NSString *)label;
 - (void)OpenConfigUrl:(NSURLRequest *)openConfigUrl;
 - (void)OpenHintUrl:(NSURLRequest *)openHintUrl;
 - (void)OpenFBWallUrl:(NSURLRequest *)openFBWallUrl;
 - (void)ShutDownRest:(NSNumber *)shutDownRest;
 - (void)ResetupVideoView;
+- (BOOL)HasVideos;
 - (void)startAni;
 - (void)stopAni;
 - (void)LayoutPanels;

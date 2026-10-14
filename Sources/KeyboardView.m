@@ -222,7 +222,11 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             }
         }
         // backspace
-        if (CGRectContainsPoint(m_backspacerect, p)) {
+        // the key picture is shifted down by 50 when the "no new titles" line is showing, so the backspace key is
+        // tested at both heights, with the current frame and a little tolerance
+        CGRect bsr = CGRectInset([self GetBackspaceRect:sz], -8.0f, -8.0f);
+        CGRect bsr2 = CGRectOffset(bsr, 0.0f, 50.0f);
+        if (CGRectContainsPoint(bsr, p) || CGRectContainsPoint(bsr2, p) || CGRectContainsPoint(m_backspacerect, p)) {
             if ([[[self m_searchlabel] text] length] == 0) break;
             NSString *s = [NSString stringWithFormat:@"%@", [[[self m_searchlabel] text] substringToIndex:([[[self m_searchlabel] text] length] - 1)]];
             [[self m_searchlabel] setText:s];
@@ -238,6 +242,49 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
             [self RestartKeyboardtimer];
         }
     }
+}
+
+// progress bar of the plugin search, drawn inside the search window under the text field (dark track, light fill,
+// same look as the field); fraction < 0 hides it
+- (void)SetSearchProgress:(float)fraction label:(NSString *)label {
+    UIView *track = [self viewWithTag:7780];
+    UILabel *lab = (UILabel *)[self viewWithTag:7781];
+    if (fraction < 0.0f) { [track setHidden:YES]; [lab setHidden:YES]; return; }
+    CGSize sz = [DEL GetiPadSize];
+    CGRect tf = [self GetTextfieldFrame:sz];
+    CGRect kb = [m_keyboardpic frame];
+    BOOL land = (sz.width > sz.height);
+    CGRect tr = CGRectMake(tf.origin.x - (land ? 120.0f : 70.0f), tf.origin.y + tf.size.height + 4.0f, tf.size.width + (land ? 240.0f : 140.0f), 5.0f);
+    if (tr.origin.x < kb.origin.x + 10.0f) tr.origin.x = kb.origin.x + 10.0f;
+    if (track == nil) {
+        track = [[[UIView alloc] initWithFrame:tr] autorelease];
+        [track setTag:7780];
+        [track setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.45f]];
+        [[track layer] setCornerRadius:2.5f];
+        [track setClipsToBounds:YES];
+        [track setUserInteractionEnabled:NO];
+        UIView *fill = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, tr.size.height)] autorelease];
+        [fill setTag:1];
+        [fill setBackgroundColor:[UIColor colorWithWhite:0.80f alpha:1.0f]];
+        [track addSubview:fill];
+        [self addSubview:track];
+        lab = [[[UILabel alloc] init] autorelease];
+        [lab setTag:7781];
+        [lab setBackgroundColor:[UIColor clearColor]];
+        [lab setTextColor:[UIColor colorWithWhite:0.7f alpha:1.0f]];
+        [lab setFont:[UIFont systemFontOfSize:11.0f]];
+        [lab setTextAlignment:NSTextAlignmentCenter];
+        [lab setUserInteractionEnabled:NO];
+        [self addSubview:lab];
+    }
+    [track setFrame:tr];
+    [lab setFrame:CGRectMake(tr.origin.x, tr.origin.y + 6.0f, tr.size.width, 14.0f)];
+    [lab setText:label ? label : @""];
+    UIView *fill = [track viewWithTag:1];
+    float f = fraction > 1.0f ? 1.0f : fraction;
+    [fill setFrame:CGRectMake(0, 0, tr.size.width * f, tr.size.height)];
+    [track setHidden:NO]; [lab setHidden:NO];
+    [self bringSubviewToFront:track]; [self bringSubviewToFront:lab];
 }
 
 - (void)ShowElements:(int)elements {
