@@ -1449,6 +1449,27 @@ static BOOL gRfxWaterOn = NO;
     dispatch_async(dispatch_get_main_queue(), ^{ [self drawView]; });
 }
 
+// The carousel shows the whole folder again; the search field and the result list stay as they are.
+- (void)ShowAllTilesKeepingSearch {
+    [self GetArrayLock:NO];
+    int n0 = (int)[[self m_tilearray] count];
+    ClipObject *center = (n0 > 0 && (int)offset >= 0 && (int)offset < n0) ? [[[self m_tilearray] objectAtIndex:(int)offset] retain] : nil;
+    if (n0 != (int)[[self m_origarray] count]) {
+        [[self m_tilearray] removeAllObjects];
+        [[self m_tilearray] addObjectsFromArray:[self m_origarray]];
+        int n = (int)[[self m_tilearray] count];
+        if (center != nil) {
+            for (int i = 0; i < n; i++) {
+                ClipObject *c = [[self m_tilearray] objectAtIndex:i];
+                if ([c ID] == [center ID] && [c m_ipodid] == [center m_ipodid]) { offset = (double)i; break; }
+            }
+        }
+        if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
+    }
+    [center release];
+    [m_arraylock unlock];
+}
+
 // the loaded title (a normal library clip now) takes the place of its tile in the coverflow; nothing else changes in the
 // carousel (no narrowing to a folder).  Takes ownership of 'clip' (caller retained it).
 - (void)ReplacePluginPlaceholder:(long long)cid withClip:(ClipObject *)clip {
@@ -1469,9 +1490,11 @@ static BOOL gRfxWaterOn = NO;
     int n = (int)[[self m_tilearray] count];
     if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
     [m_arraylock unlock];
+    long long newid = [clip ID];
     if (!replaced && !exists) { [self AddPicture:clip]; }      // placeholder not in the lists (filtered): add normally
     else [clip release];
     [self ReInitThread];
+    if (!exists) [self BuildCoverNowForPluginClipID:newid];     // the cover is built right here, not only when the loader thread wakes up
     dispatch_async(dispatch_get_main_queue(), ^{ [self drawView]; });
 }
 
@@ -1483,7 +1506,7 @@ static BOOL gRfxWaterOn = NO;
     int idx = -1;
     for (int i = 0; i < (int)[[self m_tilearray] count]; i++) {
         ClipObject *c = [[self m_tilearray] objectAtIndex:i];
-        if ([c ID] == cid && [c m_folderid] == -88) { idx = i; break; }
+        if ([c ID] == cid) { idx = i; break; }
     }
     if (idx >= 0) {
         ClipObject *c = [[self m_tilearray] objectAtIndex:idx];

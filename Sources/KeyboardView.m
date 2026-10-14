@@ -866,10 +866,17 @@ BOOL gRfxPlayNow = NO;
         [m_srlock unlock];
         SImage *img = (SImage *)[cell viewWithTag:c + 100];
         if (img != nil) {
+            // a cover that arrives later (plugin hits) blends in instead of popping in
+            BOOL blend = (section == 2 && [img m_id] == cid64 && [img image] != nil && image != nil);
             [img setM_id:cid64];
             [img setM_index:idx];
             [img setM_section:section];
-            [img setImage:image];
+            if (blend) {
+                [UIView transitionWithView:img duration:0.45 options:(UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction)
+                                animations:^{ [img setImage:image]; } completion:nil];
+            } else {
+                [img setImage:image];
+            }
         }
         SLabel *l1 = (SLabel *)[cell viewWithTag:c + 1000];
         if (l1 != nil) {
@@ -1348,6 +1355,8 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
     if ([co m_folderid] == -88 && [co m_filepath] == nil) {      // hit of a source plugin: load + import first
         RfxCrumb("AddItem plugin import");
         [[RfxPluginManager shared] ImportClip:co];
+        // a jukebox: the window closes (search text and results stay), the title is loaded and queued in the background
+        if (directClipObject == nil) [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:2]];
         return;
     }
     double now = CACurrentMediaTime();

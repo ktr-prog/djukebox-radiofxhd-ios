@@ -861,6 +861,7 @@ static RfxPluginManager *gRfxPM = nil;
     if (jr != nil) [pc setM_information:[[[NSString alloc] initWithData:jr encoding:NSUTF8StringEncoding] autorelease]];
     [glv SetWaterForClipID:cid level:0.04f];
     [glv AddPicture:pc];                                  // takes over the reference
+    [glv ShowAllTilesKeepingSearch];                      // the search text only narrows while searching local titles
     [glv ReInitThread];                                   // the loader thread builds the cover now
     [glv BuildCoverNowForPluginClipID:cid];               // and the cover is also built right here, so it shows at once
     ClipObject *target = [[ClipObject alloc] init];
@@ -1098,9 +1099,15 @@ static RfxPluginManager *gRfxPM = nil;
         [DEL LockDB:NO];
         DBOperations *db = [[DBOperations alloc] init];
         ClipObject *c = [[db GetSongWithID:[n longLongValue] withServerid:sid] retain];
+        FolderObject *of = (c != nil) ? [db GetFolderForID:[c m_folderid] withserverid:[c m_serverid] withipodid:[c m_ipodid] withspotifyid:[c m_spotifyfolderid]] : nil;
         [db release];
         [DEL UnlockDB];
-        if (c == nil) continue;
+        if (c == nil) { [of release]; continue; }
+        if (of != nil) {      // the DB row has no file / cover paths: build them like every other list does (else black cover, nothing to play)
+            NSString *dir = [NSString stringWithFormat:@"%@%@/", [DEL CreateServerDir:[m_kv m_sve] withfolderobject:of], [DEL Buildfoldername:of]];
+            [DEL BuildAndCheckFilePathes:c withfm:[NSFileManager defaultManager] withserverdir:dir withCheck:YES];
+            [of release];
+        }
         if (first && wid != 0) { [glv ReplacePluginPlaceholder:wid withClip:[c retain]]; }
         else [glv AddPicture:[c retain]];
         first = NO;
