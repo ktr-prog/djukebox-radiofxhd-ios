@@ -471,6 +471,8 @@ static NSDictionary *RfxPluginPaths(void) {
     return d;
 }
 
+static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
+
 // Stream-only titles are kept next to the local files: in the directory of the library folder "Imported" (the folder is
 // created if it does not exist yet).  Nothing is emptied at start.
 static NSString *RfxStreamDir(void) {
@@ -519,7 +521,6 @@ static NSString *RfxSafeName(NSString *s) {
     return [t length] ? t : @"Unknown";
 }
 
-static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
 
 static BOOL gRfxBarBusy = NO;          // the bar in the search window is in use (search / loading)
 
