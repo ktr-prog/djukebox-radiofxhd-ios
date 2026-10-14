@@ -473,7 +473,9 @@ static NSDictionary *RfxPluginPaths(void) {
 
 // buffer files of stream-only titles live here; the folder is emptied at every app start
 static NSString *RfxStreamDir(void) {
-    NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"];
+    // TEST: kept in Documents (visible in the Files app, not cleaned by iOS and not deleted at start) to inspect the files
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *d = [docs stringByAppendingPathComponent:@"PluginStream"];
     [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     return d;
 }
@@ -639,7 +641,7 @@ static RfxPluginManager *gRfxPM = nil;
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
         [[NSFileManager defaultManager] removeItemAtPath:[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:@"archive.js"] error:nil];
     }
-    [[NSFileManager defaultManager] removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"] error:nil];
+    // (the stream folder is no longer emptied at start, see RfxStreamDir)
     for (NSString *n in [self AutostartList]) [self Load:n done:nil];
 }
 
@@ -957,6 +959,13 @@ static RfxPluginManager *gRfxPM = nil;
                     [wglv SetWaterForClipID:wid level:0.15f + 0.82f * tf];
                 }
                 dispatch_release(sem);
+            }
+            {   // log what was really delivered: first bytes tell the format (fLaC = FLAC, ID3 / 0xFF 0xFB = MP3)
+                NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:file];
+                NSData *hd = [fh readDataOfLength:4];
+                [fh closeFile];
+                unsigned long long fsz = [[[NSFileManager defaultManager] attributesOfItemAtPath:file error:nil] fileSize];
+                NSLog(@"[Stream] %@  %llu bytes  first bytes: %@", [file lastPathComponent], fsz, hd);
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (msg != nil) {
