@@ -907,13 +907,13 @@ static RfxPluginManager *gRfxPM = nil;
         }
         [wglv SetWaterForClipID:wid level:0.15f];
         int dc = m_doneCount, tot = m_total;
-        {   // a plugin can say how long the delivered file really is (e.g. a 30 s preview of a longer title)
-            id rd = [r objectForKey:@"duration_ms"];
-            if ([rd isKindOfClass:[NSNumber class]] && [rd intValue] > 0) {
-                NSMutableDictionary *m2 = [NSMutableDictionary dictionaryWithDictionary:it];
-                [m2 setObject:rd forKey:@"duration_ms"];
-                it = m2;
-            }
+        // a plugin can say how long the delivered file really is (e.g. a 30 s preview of a longer title)
+        NSDictionary *qit = it;
+        id rd = [r objectForKey:@"duration_ms"];
+        if ([rd isKindOfClass:[NSNumber class]] && [rd intValue] > 0) {
+            NSMutableDictionary *m2 = [NSMutableDictionary dictionaryWithDictionary:it];
+            [m2 setObject:rd forKey:@"duration_ms"];
+            qit = m2;
         }
         // a plugin can mark a title as "stream only" (resolve result "cache": false): it is only buffered in the
         // temporary folder for playing and is never put into the library
@@ -966,7 +966,7 @@ static RfxPluginManager *gRfxPM = nil;
                     [wglv SetWaterForClipID:wid level:1.0f];
                     if (stream) {
                         [wglv SetFilepath:file forPluginClipID:wid];
-                        [self QueueStreamed:it file:file cover:cover];
+                        [self QueueStreamed:qit file:file cover:cover];
                         if ([[NSFileManager defaultManager] fileExistsAtPath:cover]) [wglv SetPicture:cover forPluginClipID:wid];
                     }
                     else { m_anyImport = YES; [wglv RemovePluginPlaceholder:wid]; }
