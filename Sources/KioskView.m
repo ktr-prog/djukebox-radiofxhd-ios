@@ -472,7 +472,7 @@ static NSString *RfxRpcErrorText(id er) {
 // crossfade length (seconds), set in the dev menu; the original always used 5
 static float RfxCrossfadeSeconds(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCrossfade"];
-    float f = (v == nil) ? 5.0f : [v floatValue];
+    float f = (v == nil) ? 12.0f : [v floatValue];
     if (f != f || f < 1.0f) f = 1.0f;
     if (f > 12.0f) f = 12.0f;
     return f;
@@ -855,7 +855,7 @@ static RfxPluginManager *gRfxPM = nil;
     NSString *artist = [[it objectForKey:@"artist"] isKindOfClass:[NSString class]] ? [it objectForKey:@"artist"] : @"";
     [pc setM_interpret:artist];
     [pc setM_albumname:([[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
-    if (pic != nil) [pc setM_picturepath:pic];
+    // no cover while the water runs: the tile looks like a title without cover; the real cover comes with the finished import
     [pc setM_duration:[[it objectForKey:@"duration_ms"] intValue] / 1000];
     NSData *jr = [NSJSONSerialization dataWithJSONObject:[NSDictionary dictionaryWithObjectsAndKeys:plugin, @"_plugin", ref, @"ref", nil] options:0 error:nil];
     if (jr != nil) [pc setM_information:[[[NSString alloc] initWithData:jr encoding:NSUTF8StringEncoding] autorelease]];
@@ -1000,7 +1000,15 @@ static RfxPluginManager *gRfxPM = nil;
                         [self QueueStreamed:qit file:file cover:cover];
                         if ([[NSFileManager defaultManager] fileExistsAtPath:cover]) [wglv SetPicture:cover forPluginClipID:wid];
                     }
-                    else { [self ImportDownloadedFor:wid]; }
+                    else {
+                        // the water fills up completely first, then the title becomes a normal tile with its cover
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            [self ImportDownloadedFor:wid];
+                            [wglv ClearWater];
+                            [self JobDone];
+                        });
+                        return;
+                    }
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [wglv ClearWater]; });
                 }
                 [self JobDone];
@@ -1778,7 +1786,7 @@ static RfxPluginManager *gRfxPM = nil;
         [sv addSubview:l]; [l release];
         UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(cx + rowW * 0.5f - 51.0f, y, 51.0f, 31.0f)];
         id pref = [[NSUserDefaults standardUserDefaults] objectForKey:[r objectAtIndex:1]];
-        BOOL on = (pref == nil) ? ([[r objectAtIndex:2] intValue] == 1) : [pref boolValue];
+        BOOL on = (pref == nil) ? NO : [pref boolValue];
         [sw setOn:on];
         [sw setTag:7750 + [[r objectAtIndex:2] intValue]];
         [sw addTarget:self action:@selector(DevSwitchChanged:) forControlEvents:UIControlEventValueChanged];

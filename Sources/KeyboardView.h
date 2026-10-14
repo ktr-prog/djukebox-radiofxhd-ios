@@ -62,6 +62,8 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
     NSString *m_srprogid;
     UIView *m_srfill;                 // fill view of the current header (not retained)
     BOOL m_srreloadpending;
+    int m_cursoroff;                  // cursor position: characters before the end of the search text
+    NSMutableDictionary *m_srshown;   // plugin hit id -> modification time of the thumbnail last shown
     NSLock *m_srlock;                 // +152
     UIView *m_srbgview;               // +156
     BOOL m_srpicthreadstarted[3];     // +160
@@ -144,6 +146,7 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label;
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label pluginId:(NSString *)pid;
 - (void)ReloadResults;
+- (NSString *)TextWithoutCharBeforeCursor:(NSString *)cur;
 - (void)LayoutBackspaceButton;
 - (void)BackspacePressed;
 - (NSMutableArray *)SRArray:(int)section;

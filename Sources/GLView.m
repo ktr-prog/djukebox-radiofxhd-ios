@@ -756,7 +756,7 @@ static BOOL gRfxWaterOn = NO;
                 float lvl = gRfxWaterShown;
                 if (lvl < 0.0f) lvl = 0.0f;
                 if (lvl > 1.0f) lvl = 1.0f;
-                enum { WN = 72 };
+                enum { WN = 200 };
                 GLfloat wv[(WN + 1) * 2 * 3];
                 GLfloat wc[(WN + 1) * 2 * 4];
                 float topBase = yBot + lvl * (yTop - yBot);
@@ -782,14 +782,36 @@ static BOOL gRfxWaterOn = NO;
                 glVertexPointer(3, GL_FLOAT, 0, wv);
                 glColorPointer(4, GL_FLOAT, 0, wc);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
-                // thin bright line on the surface
+                // soft highlight on the surface: a band that fades out upwards and downwards (no hard, jagged edge)
                 if (lvl > 0.01f && lvl < 0.995f) {
-                    for (int wi = 0; wi <= WN; wi++) {
-                        wv[(wi * 2 + 1) * 3 + 1] = wv[(wi * 2) * 3 + 1] - 0.012f * hh;
-                        wc[(wi * 2) * 4 + 0] = 0.95f * shade; wc[(wi * 2) * 4 + 1] = 0.95f * shade; wc[(wi * 2) * 4 + 2] = 0.95f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
-                        wc[(wi * 2 + 1) * 4 + 0] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 3] = 0.0f;
+                    float band = 0.035f * hh;
+                    for (int pass = 0; pass < 2; pass++) {
+                        for (int wi = 0; wi <= WN; wi++) {
+                            float sy = wv[(wi * 2) * 3 + 1];
+                            if (pass == 0) {      // from the surface up: bright -> transparent
+                                wv[(wi * 2) * 3 + 1] = sy + band;
+                                wv[(wi * 2 + 1) * 3 + 1] = sy;
+                            } else {              // from the surface down: bright -> transparent
+                                wv[(wi * 2) * 3 + 1] = sy;
+                                wv[(wi * 2 + 1) * 3 + 1] = sy - band;
+                            }
+                            if (wv[(wi * 2) * 3 + 1] > yTop) wv[(wi * 2) * 3 + 1] = yTop;
+                            if (wv[(wi * 2 + 1) * 3 + 1] < yBot) wv[(wi * 2 + 1) * 3 + 1] = yBot;
+                            float a0 = (pass == 0) ? 0.0f : wa * 0.55f, a1 = (pass == 0) ? wa * 0.55f : 0.0f;
+                            for (int q = 0; q < 3; q++) { wc[(wi * 2) * 4 + q] = 0.96f * shade; wc[(wi * 2 + 1) * 4 + q] = 0.96f * shade; }
+                            wc[(wi * 2) * 4 + 3] = a0; wc[(wi * 2 + 1) * 4 + 3] = a1;
+                        }
+                        glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
+                        // restore the surface y for the second pass
+                        for (int wi = 0; wi <= WN; wi++) {
+                            float fr = (float)wi / (float)WN;
+                            float wave = amp * (float)(0.65 * sin(ph + fr * 7.0) + 0.35 * sin(ph * 1.45 - fr * 11.0 + 1.3));
+                            float wy = topBase + wave;
+                            if (wy > yTop) wy = yTop;
+                            if (wy < yBot) wy = yBot;
+                            wv[(wi * 2) * 3 + 1] = wy;
+                        }
                     }
-                    glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
                 }
                 glEnableClientState(GL_TEXTURE_COORD_ARRAY);
                 glEnable(GL_TEXTURE_2D);
@@ -988,7 +1010,7 @@ static BOOL gRfxWaterOn = NO;
         // a thin black frame around the cover; the cover itself fills everything inside the frame.
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
         id borderPref = [ud objectForKey:@"RfxDevCoverBorder"];
-        BOOL withBorder = (borderPref == nil) ? YES : [borderPref boolValue];
+        BOOL withBorder = (borderPref == nil) ? NO : [borderPref boolValue];
         id widthPref = [ud objectForKey:@"RfxDevCoverBorderWidth"];
         float units = (widthPref == nil) ? 2.0f : [widthPref floatValue];
         float bw = (withBorder && !borderalreadypresent) ? units * (w / 196.0f) : 0.0f;

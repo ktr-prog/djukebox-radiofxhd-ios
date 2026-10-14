@@ -246,8 +246,9 @@
             if (!(i == 0 && devNoVol)) [m_registers[i] setM_enabled:YES];
             continue;
         }
-        if (i == 1 || i == 3 || i >= 6) continue;
         if ([self m_pinchstatus] == 2 && i != 2) continue;
+        if (i == 7) { [m_registers[i] setM_enabled:YES]; continue; }     // port: opens the source plugins panel (or the Videothek if it has films)
+        if (i == 1 || i == 3 || i >= 6) continue;
         BOOL online = [DEL IsOnline];
         switch (i) {
             case 0:
@@ -384,6 +385,8 @@
         case 7:
             if ([m_searchview m_keyboardshown]) {
                 [self ToggleAni];
+            } else if (![m_searchview HasVideos]) {
+                [m_parent OpenSourcesPanel];         // port: no films in the Videothek -> the button opens the source plugins panel
             } else {
                 id video = [m_searchview GetFirstVideo];
                 if (video == nil) {
@@ -431,7 +434,8 @@
             [m_searchview RestartKeyboardtimer];
         }
         if ([m_searchview m_showwhat] == 2) {
-            [m_searchview SetUpSearchList:[self m_tilearray]];
+            // with a search text the results stay as they were (they are not searched again)
+            if ([[[m_searchview m_searchlabel] text] length] == 0) [m_searchview SetUpSearchList:[self m_tilearray]];
             [m_searchview StartCursorBlinking];
         }
         [self ReInitDimmView];
@@ -488,8 +492,11 @@
             [[m_searchview m_searchlabel] text] != nil &&
             [[[m_searchview m_searchlabel] text] length] != 0 &&
             ![self IsShowingMTScroller]) {
-            [m_searchview EmptySearchfield];
-            [self performSelector:@selector(BeginSearch:) withObject:[[m_searchview m_searchlabel] text] afterDelay:0.1];
+            // DEVIATION: the original cleared the search text here.  The text and the result list stay; the carousel just shows
+            // everything again (the search narrows it only while it is being typed).
+            [self ShowAllTilesKeepingSearch];
+            [self ReInitThread];
+            [self drawView];
         }
     }
     if (wasOnlySearch) {

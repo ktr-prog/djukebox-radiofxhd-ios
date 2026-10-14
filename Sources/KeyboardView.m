@@ -41,6 +41,7 @@ BOOL gRfxPlayNow = NO;
     if (m_srarrayplugin != nil) { [m_srarrayplugin release]; m_srarrayplugin = nil; }
     [m_srprogname release]; m_srprogname = nil;
     [m_srprogid release]; m_srprogid = nil;
+    [m_srshown release]; m_srshown = nil;
     if (m_srarrayother != nil) {
         [m_srarrayother release];
         m_srarrayother = nil;
@@ -52,6 +53,7 @@ BOOL gRfxPlayNow = NO;
 }
 
 - (void)EmptySearchfield {
+    m_cursoroff = 0;
     [[self m_searchlabel] setText:@""];
     [m_xfield setHidden:YES];
 }
@@ -162,6 +164,7 @@ BOOL gRfxPlayNow = NO;
         if (![m_xfield isHidden]) {
             CGRect xf = [m_xfield frame];
             if (CGRectContainsPoint(CGRectMake(xf.origin.x - 5.0f, xf.origin.y - 12.0f, xf.size.width + 8.0f, xf.size.height + 15.0f), p)) {
+                m_cursoroff = 0;
                 [[self m_searchlabel] setText:@""];
                 [m_xfield setHidden:YES];
                 [self SetCursorFrame];
@@ -180,6 +183,22 @@ BOOL gRfxPlayNow = NO;
                     [[m_pkiosk m_glv] performSelector:@selector(ToggleKBAndRegister:) withObject:[NSNumber numberWithInt:m_showwhat] afterDelay:0.01];
                     return;
                 }
+            }
+        }
+        {   // tap into the search text: moves the cursor to the nearest letter boundary
+            CGRect lf = [[self m_searchlabel] frame];
+            NSString *tx = [[self m_searchlabel] text];
+            if ([tx length] > 0 && p.x >= lf.origin.x - 4.0f && p.x <= lf.origin.x + lf.size.width + 4.0f && p.y >= lf.origin.y - 4.0f && p.y <= lf.origin.y + lf.size.height + 4.0f) {
+                NSDictionary *fa = [NSDictionary dictionaryWithObject:[[self m_searchlabel] font] forKey:NSFontAttributeName];
+                float rel = p.x - lf.origin.x, bestd = 1e9f; int best = (int)[tx length];
+                for (int i = 0; i <= (int)[tx length]; i++) {
+                    float wx = [[tx substringToIndex:i] sizeWithAttributes:fa].width;
+                    if (fabsf(wx - rel) < bestd) { bestd = fabsf(wx - rel); best = i; }
+                }
+                m_cursoroff = (int)[tx length] - best;
+                [self SetCursorFrame];
+                [self RestartKeyboardtimer];
+                break;
             }
         }
         // hit test of the keys in the keyboard picture
@@ -219,7 +238,10 @@ BOOL gRfxPlayNow = NO;
                 } else {
                     c = (char)((((unsigned)(idx - 0x1c) < 10u) ? 0x14 : 0x41) + idx);
                 }
-                NSString *nt = [NSString stringWithFormat:@"%@%@", [[self m_searchlabel] text], [NSString stringWithFormat:@"%c", c]];
+                NSString *cur0 = [[self m_searchlabel] text] ? [[self m_searchlabel] text] : @"";
+                if (m_cursoroff > (int)[cur0 length]) m_cursoroff = (int)[cur0 length];
+                int at0 = (int)[cur0 length] - m_cursoroff;
+                NSString *nt = [NSString stringWithFormat:@"%@%c%@", [cur0 substringToIndex:at0], c, [cur0 substringFromIndex:at0]];
                 [[self m_searchlabel] setText:nt];
                 [self SetCursorFrame];
                 if ([[self m_searchlabel] text] == nil || [[[self m_searchlabel] text] length] == 0) {
@@ -235,9 +257,9 @@ BOOL gRfxPlayNow = NO;
         // tested at both heights, with the current frame and a little tolerance
         CGRect bsr = CGRectInset([self GetBackspaceRect:sz], -2.0f, -2.0f);
         if (CGRectContainsPoint(bsr, p)) {
-            if ([[[self m_searchlabel] text] length] == 0) break;
-            NSString *s = [NSString stringWithFormat:@"%@", [[[self m_searchlabel] text] substringToIndex:([[[self m_searchlabel] text] length] - 1)]];
-            [[self m_searchlabel] setText:s];
+            NSString *cur1 = [[self m_searchlabel] text];
+            if ([cur1 length] == 0) break;
+            [[self m_searchlabel] setText:[self TextWithoutCharBeforeCursor:cur1]];
             [self SetCursorFrame];
             break;
         }
@@ -296,7 +318,7 @@ BOOL gRfxPlayNow = NO;
 - (void)BackspacePressed {
     NSString *cur = [[self m_searchlabel] text];
     if ([cur length] == 0) return;
-    [[self m_searchlabel] setText:[cur substringToIndex:[cur length] - 1]];
+    [[self m_searchlabel] setText:[self TextWithoutCharBeforeCursor:cur]];
     [self SetCursorFrame];
     [m_xfield setHidden:([[[self m_searchlabel] text] length] == 0)];
     [m_parent BeginSearch:[[self m_searchlabel] text]];
@@ -846,6 +868,7 @@ BOOL gRfxPlayNow = NO;
         NSString *title = @"";
         NSString *interpret = @"";
         UIImage *image = nil;
+        NSDate *modk = nil;
         [m_srlock lock];
         if (idx >= 0 && idx < (int)[src count]) {
             ClipObject *co = [src objectAtIndex:idx];
@@ -854,6 +877,8 @@ BOOL gRfxPlayNow = NO;
                 title = [NSString stringWithString:([co m_title] ? [co m_title] : @"")];
                 interpret = [NSString stringWithString:([co m_interpret] ? [co m_interpret] : @"")];
                 image = [m_pkiosk GetSmallImage:co];
+                if (section == 2 && [co m_picturepath] != nil)
+                    modk = [[[NSFileManager defaultManager] attributesOfItemAtPath:[DEL BuildSmallPicpath:[co m_picturepath]] error:nil] fileModificationDate];
                 if (image == nil) {
                     image = [UIImage imageNamed:@"cover-note-40x40.png"];
                     if (!m_srpicthreadstarted[section]) {
@@ -867,7 +892,14 @@ BOOL gRfxPlayNow = NO;
         SImage *img = (SImage *)[cell viewWithTag:c + 100];
         if (img != nil) {
             // a cover that arrives later (plugin hits) blends in instead of popping in
-            BOOL blend = (section == 2 && [img m_id] == cid64 && [img image] != nil && image != nil);
+            BOOL blend = NO;
+            if (section == 2 && cid64 != -1 && modk != nil && image != nil) {
+                if (m_srshown == nil) m_srshown = [[NSMutableDictionary alloc] init];
+                NSNumber *key = [NSNumber numberWithLongLong:cid64];
+                NSDate *prev = [m_srshown objectForKey:key];
+                blend = (prev != nil && ![prev isEqualToDate:modk]);     // the thumbnail changed since it was last shown
+                [m_srshown setObject:modk forKey:key];
+            }
             [img setM_id:cid64];
             [img setM_index:idx];
             [img setM_section:section];
@@ -1310,10 +1342,21 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
     m_cursortimer = [NSTimer scheduledTimerWithTimeInterval:0.7 target:self selector:@selector(CursorTimerFunction:) userInfo:nil repeats:NO];
 }
 
+// the cursor sits m_cursoroff characters before the end of the text (0: at the end); a tap into the text moves it
+- (NSString *)TextWithoutCharBeforeCursor:(NSString *)cur {
+    if (m_cursoroff > (int)[cur length]) m_cursoroff = (int)[cur length];
+    int at = (int)[cur length] - m_cursoroff;
+    if (at <= 0) return cur;
+    return [[cur substringToIndex:at - 1] stringByAppendingString:[cur substringFromIndex:at]];
+}
+
 - (void)SetCursorFrame {
     CGRect lf = [[self m_searchlabel] frame];
-    NSString *t = [[self m_searchlabel] text];
-    CGSize ts = [t sizeWithAttributes:[NSDictionary dictionaryWithObject:[[self m_searchlabel] font] forKey:NSFontAttributeName]];
+    NSString *t = [[self m_searchlabel] text] ? [[self m_searchlabel] text] : @"";
+    if (m_cursoroff > (int)[t length]) m_cursoroff = (int)[t length];
+    if ([t length] == 0) m_cursoroff = 0;
+    NSString *pre = [t substringToIndex:[t length] - m_cursoroff];
+    CGSize ts = [pre sizeWithAttributes:[NSDictionary dictionaryWithObject:[[self m_searchlabel] font] forKey:NSFontAttributeName]];
     float x = lf.origin.x + ts.width;
     float w = ((x + 3.0f) < (lf.origin.x + lf.size.width)) ? 2.0f : 0.0f;
     [m_cursorview setFrame:CGRectMake(x, lf.origin.y + 3.0f, w, lf.size.height - 6.0f)];
