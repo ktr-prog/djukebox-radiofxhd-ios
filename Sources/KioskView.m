@@ -2,6 +2,7 @@
 // Manual reference counting (CLANG_ENABLE_OBJC_ARC=NO).  Feature groups that depend on the dead backend or on
 // removed third-party code (Spotify, remote control, EPG, printing, third-party animation, jingles, ambience,
 // facebook, copy thread, ...) are not part of this file; see DEVIATIONS.md.
+#import <ImageIO/ImageIO.h>
 #import "KioskView.h"
 #import "TestLibrary.h"
 #import "MusicImporter.h"
@@ -305,13 +306,49 @@ static long long RfxItemID(NSString *plugin, NSString *ref) {
 
 @end
 
+static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
+
+// A plugin may name an icon address ("icon_url" in its initialize result).  The app loads it once (also .ico) and keeps it as
+// Documents/Plugins/<plugin id>.png, which the search window shows in the header of that source.
+static void RfxFetchPluginIcon(id urlStr, NSString *pid) {
+    if (![urlStr isKindOfClass:[NSString class]] || [urlStr length] == 0 || [pid length] == 0) return;
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *dest = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:pid] stringByAppendingPathExtension:@"png"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:dest]) return;
+    NSURL *u = [NSURL URLWithString:urlStr];
+    if (u == nil) return;
+    [[[NSURLSession sharedSession] dataTaskWithURL:u completionHandler:^(NSData *d, NSURLResponse *rs, NSError *er) {
+        if (d == nil || er != nil) { NSLog(@"[Plugin] icon %@: %@", urlStr, er ? [er localizedDescription] : @"keine Daten"); return; }
+        UIImage *img = nil;
+        CGImageSourceRef src = CGImageSourceCreateWithData((CFDataRef)d, NULL);     // .ico: take the largest image of the file
+        if (src != NULL) {
+            size_t n = CGImageSourceGetCount(src), best = 0, bw = 0;
+            for (size_t i = 0; i < n; i++) {
+                CGImageRef cg = CGImageSourceCreateImageAtIndex(src, i, NULL);
+                if (cg != NULL) { if (CGImageGetWidth(cg) >= bw) { bw = CGImageGetWidth(cg); best = i; } CGImageRelease(cg); }
+            }
+            CGImageRef cg = (n > 0) ? CGImageSourceCreateImageAtIndex(src, best, NULL) : NULL;
+            if (cg != NULL) { img = [UIImage imageWithCGImage:cg]; CGImageRelease(cg); }
+            CFRelease(src);
+        }
+        if (img == nil) img = [UIImage imageWithData:d];
+        NSData *png = (img != nil) ? UIImagePNGRepresentation(img) : nil;
+        if (png == nil) { NSLog(@"[Plugin] icon %@: Format nicht lesbar", urlStr); return; }
+        [[NSFileManager defaultManager] createDirectoryAtPath:[dest stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+        [png writeToFile:dest atomically:YES];
+        dispatch_async(dispatch_get_main_queue(), ^{ [[[(KioskView *)gRfxToastHost m_glv] GetKBView] ReloadResults]; });
+    }] resume];
+}
+
 @interface RfxPluginHost : NSObject {
     RfxJSPlugin *m_js;
     int m_nextid;
     NSDictionary *m_caps;
     NSString *m_pluginName;
     NSString *m_pluginId;
+    NSString *m_iconUrl;
 }
+@property (nonatomic, retain) NSString *iconUrl;
 @property (nonatomic, retain) NSString *pluginId;
 @property (nonatomic, retain) NSDictionary *caps;
 @property (nonatomic, retain) NSString *pluginName;
@@ -322,14 +359,14 @@ static long long RfxItemID(NSString *plugin, NSString *ref) {
 @end
 
 @implementation RfxPluginHost
-@synthesize caps = m_caps, pluginName = m_pluginName, pluginId = m_pluginId;
+@synthesize caps = m_caps, pluginName = m_pluginName, pluginId = m_pluginId, iconUrl = m_iconUrl;
 
 - (id)initWithJS:(RfxJSPlugin *)js {
     self = [super init];
     if (self) { m_js = [js retain]; m_nextid = 1; }
     return self;
 }
-- (void)dealloc { [m_js release]; [m_caps release]; [m_pluginName release]; [m_pluginId release]; [super dealloc]; }
+- (void)dealloc { [m_js release]; [m_caps release]; [m_pluginName release]; [m_pluginId release]; [m_iconUrl release]; [super dealloc]; }
 
 - (BOOL)has:(NSString *)cap { return [[m_caps objectForKey:cap] boolValue]; }
 
@@ -422,6 +459,8 @@ static NSString *RfxRpcErrorText(id er) {
         [self setCaps:[result objectForKey:@"capabilities"]];
         [self setPluginName:[[result objectForKey:@"plugin"] objectForKey:@"name"]];
         [self setPluginId:[[result objectForKey:@"plugin"] objectForKey:@"id"]];
+        id iu = [[result objectForKey:@"plugin"] objectForKey:@"icon_url"];
+        if ([iu isKindOfClass:[NSString class]]) [self setIconUrl:iu];
         done(nil);
     }];
 }
@@ -471,7 +510,6 @@ static NSDictionary *RfxPluginPaths(void) {
     return d;
 }
 
-static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
 
 // Stream-only titles are kept next to the local files: in the directory of the library folder "Imported" (the folder is
 // created if it does not exist yet).  Nothing is emptied at start.
@@ -522,77 +560,17 @@ static NSString *RfxSafeName(NSString *s) {
 }
 
 
-static BOOL gRfxBarBusy = NO;          // the bar in the search window is in use (search / loading)
-
-static KeyboardView *RfxKB(void) {
-    KioskView *kv = (KioskView *)gRfxToastHost;
-    return [kv isKindOfClass:[KioskView class]] ? [[kv m_glv] GetKBView] : nil;
-}
+static BOOL gRfxBarBusy = NO;
 
 // No banner any more: messages only go to the log.
 static void RfxToast(NSString *t) {
     NSLog(@"[Msg] %@", t);
 }
 
-// simple progress bar at the bottom of the kiosk view (text + bar), used while plugin titles are loaded
-static void RfxProgressBox(NSString *text, float frac) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *w = gRfxToastHost;
-        if (w == nil) return;
-        UIView *box = [w viewWithTag:7772];
-        UILabel *lab = nil; UIProgressView *bar = nil;
-        if (box == nil) {
-            box = [[[UIView alloc] init] autorelease];
-            [box setTag:7772];
-            [box setBackgroundColor:[UIColor colorWithWhite:0.1f alpha:0.92f]];
-            [[box layer] setCornerRadius:8.0f];
-            [[box layer] setZPosition:99999.0f];
-            [box setUserInteractionEnabled:NO];
-            lab = [[[UILabel alloc] init] autorelease];
-            [lab setTag:1]; [lab setTextColor:[UIColor whiteColor]]; [lab setFont:[UIFont systemFontOfSize:14.0f]];
-            [lab setTextAlignment:NSTextAlignmentCenter];
-            [box addSubview:lab];
-            bar = [[[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault] autorelease];
-            [bar setTag:2];
-            [box addSubview:bar];
-            [w addSubview:box];
-        }
-        lab = (UILabel *)[box viewWithTag:1];
-        bar = (UIProgressView *)[box viewWithTag:2];
-        CGRect wb = [w bounds];
-        [box setFrame:CGRectMake(60.0f, wb.size.height - 70.0f, wb.size.width - 120.0f, 46.0f)];
-        [lab setFrame:CGRectMake(8.0f, 4.0f, [box bounds].size.width - 16.0f, 20.0f)];
-        [bar setFrame:CGRectMake(14.0f, 30.0f, [box bounds].size.width - 28.0f, 6.0f)];
-        [lab setText:text];
-        [bar setProgress:(frac < 0 ? 0 : (frac > 1 ? 1 : frac))];
-        [box setAlpha:1.0f];
-        [w bringSubviewToFront:box];
-    });
-}
-
-static void RfxProgressHideBox(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *box = [gRfxToastHost viewWithTag:7772];
-        if (box == nil) return;
-        [UIView animateWithDuration:0.4 animations:^{ [box setAlpha:0.0f]; }];
-    });
-}
-
-// loading progress: shown on the bar of the search window (its style); without the search window on a plain bar
+// Download progress is only shown by the water in the carousel; no bars anywhere else.
 static void RfxProgress(NSString *text, float frac) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        gRfxBarBusy = YES;
-        KeyboardView *kb = RfxKB();
-        if (kb != nil && [kb m_keyboardshown]) [kb SetSearchProgress:frac label:text];
-        else RfxProgressBox(text, frac);
-    });
 }
 static void RfxProgressHide(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        gRfxBarBusy = NO;
-        [RfxKB() SetSearchProgress:-1.0f label:nil];
-        RfxProgressHideBox();
-    });
 }
 
 // square jpeg + 40 px thumbnail in the app's own naming (BuildSmallPicpath)
@@ -693,6 +671,7 @@ static RfxPluginManager *gRfxPM = nil;
         [m_loading removeObject:name];
         if (e != nil) { RfxToast([NSString stringWithFormat:@"Plugin %@: %@", name, e]); if (done) done(nil); return; }
         [m_hosts setObject:host forKey:name];
+        RfxFetchPluginIcon([host iconUrl], name);
         if (done) done(host);
     }];
 }
@@ -711,13 +690,18 @@ static RfxPluginManager *gRfxPM = nil;
 }
 - (void)SearchTick {
     double t = CACurrentMediaTime() - m_st0;
-    [[[m_kv m_glv] GetKBView] SetSearchProgress:(float)(0.9 * (1.0 - exp(-t / 2.5))) label:(m_sphase ? m_sphase : @"Suche ...")];
+    NSString *pn = nil, *pid = nil;
+    for (NSString *n in m_hosts) {
+        RfxPluginHost *h = [m_hosts objectForKey:n];
+        if ([h has:@"search"]) { pn = [h pluginName]; pid = n; break; }
+    }
+    [[[m_kv m_glv] GetKBView] SetSearchProgress:(float)(0.9 * (1.0 - exp(-t / 2.5))) label:pn pluginId:pid];
 }
 - (void)SearchIdle {
     [m_stimer invalidate]; m_stimer = nil;
     [m_sphase release]; m_sphase = nil;
     gRfxBarBusy = m_busy;
-    if (!m_busy) [[[m_kv m_glv] GetKBView] SetSearchProgress:-1.0f label:nil];
+    [[[m_kv m_glv] GetKBView] SetSearchProgress:-1.0f label:nil];
 }
 
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
@@ -773,7 +757,7 @@ static RfxPluginManager *gRfxPM = nil;
             if (--waiting == 0) {
                 if ([all count] == 0) { [self SearchIdle]; done(text, [NSArray array]); return; }
                 [self SearchBusy:@"Lade Cover ..."];
-                [self BuildClips:all text:text done:^(NSString *tx, NSArray *clips) { [self SearchIdle]; done(tx, clips); }];
+                [self BuildClips:all text:text done:^(NSString *tx, NSArray *clips) { done(tx, clips); [self SearchIdle]; }];
             }
         }];
     }
@@ -787,7 +771,8 @@ static RfxPluginManager *gRfxPM = nil;
         NSString *tdir = [[docs stringByAppendingPathComponent:@"PluginCache"] stringByAppendingPathComponent:@"thumbs"];
         [[NSFileManager defaultManager] createDirectoryAtPath:tdir withIntermediateDirectories:YES attributes:nil error:nil];
         NSMutableArray *specs = [NSMutableArray array];   // {item, pic, id}
-        dispatch_group_t g = dispatch_group_create();
+        // The list is shown at once.  Covers that are not on the device yet get a placeholder thumbnail now and are loaded in
+        // the background; the list refreshes as they arrive (the small file is a placeholder until the big one exists).
         for (NSDictionary *it in all) {
             NSString *hex = nil;
             unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", [it objectForKey:@"_plugin"], [it objectForKey:@"ref"]], &hex);
@@ -798,19 +783,21 @@ static RfxPluginManager *gRfxPM = nil;
             NSURL *au = ([art isKindOfClass:[NSString class]] && [art length]) ? [NSURL URLWithString:art] : nil;
             NSString *title = [it objectForKey:@"title"];
             if (au == nil) { RfxWriteThumbs(nil, pic, title); continue; }
-            dispatch_group_enter(g);
+            NSString *small = [DEL BuildSmallPicpath:pic];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:small]) {
+                NSData *ph = [MusicImporter SquareJPEG:[MusicImporter PlaceholderForTitle:title] size:40.0f];
+                if (ph) [ph writeToFile:small atomically:YES];
+            }
             NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:au];
-            [rq setTimeoutInterval:8.0];
+            [rq setTimeoutInterval:15.0];
             [[[NSURLSession sharedSession] dataTaskWithRequest:rq completionHandler:^(NSData *d, NSURLResponse *rs, NSError *er) {
                 NSAutoreleasePool *p2 = [[NSAutoreleasePool alloc] init];
                 UIImage *img = (d != nil && er == nil) ? [UIImage imageWithData:d] : nil;
                 RfxWriteThumbs(img, pic, title);
+                dispatch_async(dispatch_get_main_queue(), ^{ [[[m_kv m_glv] GetKBView] ReloadResults]; });
                 [p2 release];
-                dispatch_group_leave(g);
             }] resume];
         }
-        dispatch_group_wait(g, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
-        dispatch_release(g);
         NSMutableArray *clips = [NSMutableArray array];
         for (NSDictionary *sp in specs) {
             NSDictionary *it = [sp objectForKey:@"item"];
@@ -1012,7 +999,7 @@ static RfxPluginManager *gRfxPM = nil;
                         [self QueueStreamed:qit file:file cover:cover];
                         if ([[NSFileManager defaultManager] fileExistsAtPath:cover]) [wglv SetPicture:cover forPluginClipID:wid];
                     }
-                    else { m_anyImport = YES; [wglv RemovePluginPlaceholder:wid]; }
+                    else { [self ImportDownloadedFor:wid]; }
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [wglv ClearWater]; });
                 }
                 [self JobDone];
@@ -1030,8 +1017,6 @@ static RfxPluginManager *gRfxPM = nil;
 
 - (void)FinishBatch {
     RfxProgressHide();
-    if (m_anyImport) [self FinishImportQueue:m_queueLast];
-    m_anyImport = NO;
 }
 
 #pragma mark play reports (plugins with the "reporting" capability)
@@ -1094,24 +1079,42 @@ static RfxPluginManager *gRfxPM = nil;
     [c release];
 }
 
-// imports what is waiting in Documents/Import (normal library import into the main folder), shows that folder in the
-// carousel and, for a single title, puts it into the queue
-- (void)FinishImportQueue:(BOOL)queue {
+// imports what is waiting in Documents/Import (normal library import).  Every imported song takes the place of the tile
+// of the title that was loading (wid, 0: none) and is appended to the play queue; if nothing is playing it starts.
+// The carousel is not narrowed to a folder.
+- (void)ImportDownloadedFor:(long long)wid {
     if (m_kv == nil) return;
-    [MusicImporter ImportForServer:[m_kv m_sve]];
-    long long cid = [MusicImporter lastImportedClipID], fid = [MusicImporter lastImportedFolderID];
-    if (cid == 0) { RfxToast(@"Import fehlgeschlagen (Format nicht lesbar?)."); return; }
-    int sid = [[m_kv m_sve] serverid];
-    [DEL LockDB:NO];
-    DBOperations *db = [[DBOperations alloc] init];
-    ClipObject *c = [[db GetSongWithID:cid withServerid:sid] retain];
-    FolderObject *folder = [[db GetFolderForID:fid withserverid:sid withipodid:-1 withspotifyid:nil] retain];
-    [db release];
-    [DEL UnlockDB];
     GLView *glv = [m_kv m_glv];
-    if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];
-    if (queue && c != nil) { gRfxPlayNow = YES; [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c]; gRfxPlayNow = NO; }
-    [c release]; [folder release];
+    [MusicImporter ImportForServer:[m_kv m_sve]];
+    NSArray *ids = [MusicImporter lastImportedClipIDs];
+    if ([ids count] == 0) {
+        RfxToast(@"Import fehlgeschlagen (Format nicht lesbar?).");
+        if (wid != 0) [glv RemovePluginPlaceholder:wid];
+        return;
+    }
+    int sid = [[m_kv m_sve] serverid];
+    BOOL first = YES;
+    for (NSNumber *n in ids) {
+        [DEL LockDB:NO];
+        DBOperations *db = [[DBOperations alloc] init];
+        ClipObject *c = [[db GetSongWithID:[n longLongValue] withServerid:sid] retain];
+        [db release];
+        [DEL UnlockDB];
+        if (c == nil) continue;
+        if (first && wid != 0) { [glv ReplacePluginPlaceholder:wid withClip:[c retain]]; }
+        else [glv AddPicture:[c retain]];
+        first = NO;
+        [glv MarkClipPlayed:c];                       // inserted during a shuffle round: counts as played
+        gRfxPlayNow = YES;
+        [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+        gRfxPlayNow = NO;
+        [c release];
+    }
+    if (first && wid != 0) [glv RemovePluginPlaceholder:wid];
+}
+
+- (void)FinishImportQueue:(BOOL)queue {
+    [self ImportDownloadedFor:0];
 }
 @end
 
@@ -2200,7 +2203,8 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
         return;
     }
     if ([[self m_clips] count] != 0) {
-        if (mMCMixer == nil || ![mMCMixer isPlaying]) {
+        // "nothing is playing" = no running song (the audio graph itself keeps running between songs)
+        if (m_cliptorotate == nil && [self m_pausebegintime] < 0 && !m_fadingover && !m_ordering) {
             ClipObject *first = [[[self m_clips] rfx_objectAtIndex:0] retain];
             [self StopPlayers];
             [self StartAudioPlayer:first withAniNext:NO witharg1:1];
@@ -2217,6 +2221,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
     [self StopPlayers];
     [m_glv GetArrayLock:NO];
     ClipObject *pick = nil;
+    BOOL needShuffle = NO;
     if ([[m_glv m_tilearray] count] != 0) {
         NSMutableArray *tiles = [[NSMutableArray alloc] init];
         [tiles addObjectsFromArray:[m_glv m_tilearray]];
@@ -2239,14 +2244,18 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
                     }
                 }
             }
-            if (t == nil) t = [tiles objectAtIndex:(random() % [tiles count])];
-            ClipObject *src = ([t m_tracks] != nil && [[t m_tracks] count] != 0) ? [[t m_tracks] objectAtIndex:0] : t;
-            pick = [[ClipObject alloc] init];
-            [self CopyPropertiesFromObject:src toObject:pick];
+            if (t == nil) {
+                needShuffle = YES;          // the shuffle (which knows what was played) picks it below
+            } else {
+                ClipObject *src = ([t m_tracks] != nil && [[t m_tracks] count] != 0) ? [[t m_tracks] objectAtIndex:0] : t;
+                pick = [[ClipObject alloc] init];
+                [self CopyPropertiesFromObject:src toObject:pick];
+            }
         }
         [tiles release];
     }
     [m_glv releaseArraylock];
+    if (needShuffle) { m_autoselected = YES; pick = [m_glv getNextClipObject]; }
     if (pick == nil || [pick m_folderid] == -33) {
         [pick release];
         if (gv_kioskflag == 0)
@@ -2436,11 +2445,9 @@ static void RemoveClipViews(ClipObject *c) {
 
     int pos;
     BOOL replaceFirst = NO;
-    if (gRfxPlayNow && count > 0) {
-        // a title the user just chose replaces the one that is playing now (cross fade), whatever state the fade flag is in
-        m_fadingover = NO;
-        replaceFirst = YES;
-        pos = 0;
+    if (gRfxPlayNow) {
+        // a downloaded title is appended to the queue; it does not interrupt what is playing
+        pos = count;
     } else if ((flags & 4) != 0) {
         pos = count;
     } else if (insertAt > 0) {
@@ -2484,7 +2491,7 @@ static void RemoveClipViews(ClipObject *c) {
                 [self performSelector:@selector(sendSubviewToBack:) withObject:[clip m_swapimgv] afterDelay:0.67];
         }
         // nothing is playing and the queue was empty: the chosen title starts by itself
-        if (gRfxPlayNow && count == 0) [self performSelector:@selector(StartFirstFolderSong:) withObject:[NSNumber numberWithInt:0] afterDelay:0.7];
+        if (gRfxPlayNow && (count == 0 || m_cliptorotate == nil)) [self performSelector:@selector(StartFirstFolderSong:) withObject:[NSNumber numberWithInt:0] afterDelay:0.7];
         [clip release];
         return;
     }

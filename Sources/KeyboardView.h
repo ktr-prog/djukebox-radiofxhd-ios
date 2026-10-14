@@ -57,6 +57,11 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
     NSMutableArray *m_srarray;        // +144
     NSMutableArray *m_srarrayother;   // +148
     NSMutableArray *m_srarrayplugin;  // hits of source plugins (own section in the result list)
+    float m_srprog;                   // search progress shown as fill of the plugin section header (< 0: none)
+    NSString *m_srprogname;           // source name / id shown in that header while it loads
+    NSString *m_srprogid;
+    UIView *m_srfill;                 // fill view of the current header (not retained)
+    BOOL m_srreloadpending;
     NSLock *m_srlock;                 // +152
     UIView *m_srbgview;               // +156
     BOOL m_srpicthreadstarted[3];     // +160
@@ -137,6 +142,8 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
 - (void)SetImagesOnSlider:(UISlider *)imagesOnSlider;
 - (void)SetResortFlag:(int)resortFlag withval:(BOOL)val;
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label;
+- (void)SetSearchProgress:(float)fraction label:(NSString *)label pluginId:(NSString *)pid;
+- (void)ReloadResults;
 - (void)LayoutBackspaceButton;
 - (void)BackspacePressed;
 - (NSMutableArray *)SRArray:(int)section;

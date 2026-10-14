@@ -39,6 +39,8 @@ BOOL gRfxPlayNow = NO;
         m_srarray = nil;
     }
     if (m_srarrayplugin != nil) { [m_srarrayplugin release]; m_srarrayplugin = nil; }
+    [m_srprogname release]; m_srprogname = nil;
+    [m_srprogid release]; m_srprogid = nil;
     if (m_srarrayother != nil) {
         [m_srarrayother release];
         m_srarrayother = nil;
@@ -185,8 +187,8 @@ BOOL gRfxPlayNow = NO;
         CGRect kbf = [m_keyboardpic frame];
         float left, right, top, bottom, keyw;
         if (portrait) {
-            left = 94.0f;
-            right = 677.0f;
+            left = (float)(int)(kbf.origin.x + 13.0f);
+            right = left + 583.0f;
             keyw = 42.0f;
             top = (float)(int)(kbf.origin.y + 52.0f + yoff);
             bottom = (float)(int)(kbf.origin.y + 135.0f + yoff);
@@ -231,9 +233,8 @@ BOOL gRfxPlayNow = NO;
         // backspace
         // the key picture is shifted down by 50 when the "no new titles" line is showing, so the backspace key is
         // tested at both heights, with the current frame and a little tolerance
-        CGRect bsr = CGRectInset([self GetBackspaceRect:sz], -8.0f, -8.0f);
-        CGRect bsr2 = CGRectOffset(bsr, 0.0f, 50.0f);
-        if (CGRectContainsPoint(bsr, p) || CGRectContainsPoint(bsr2, p) || CGRectContainsPoint(m_backspacerect, p)) {
+        CGRect bsr = CGRectInset([self GetBackspaceRect:sz], -2.0f, -2.0f);
+        if (CGRectContainsPoint(bsr, p)) {
             if ([[[self m_searchlabel] text] length] == 0) break;
             NSString *s = [NSString stringWithFormat:@"%@", [[[self m_searchlabel] text] substringToIndex:([[[self m_searchlabel] text] length] - 1)]];
             [[self m_searchlabel] setText:s];
@@ -251,46 +252,44 @@ BOOL gRfxPlayNow = NO;
     }
 }
 
-// Progress of the plugin search / of a download: two slim vertical bars left and right of the search window (there is
-// room beside it, so nothing covers the keyboard).  Dark rounded track, bright fill rising from the bottom like the
-// water in the carousel.  fraction < 0 hides them.  The text is not shown any more.
+// Progress of the plugin search: the header of the source's section ("Qobuz") is the bar itself - a fill grows behind
+// the header text.  fraction < 0 ends it.  Nothing else in the window shows progress.
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label {
-    UIView *left = [self viewWithTag:7780], *right = [self viewWithTag:7782];
-    if (fraction < 0.0f) { [left setHidden:YES]; [right setHidden:YES]; return; }
-    CGSize sz = [DEL GetiPadSize];
-    CGRect kb = [m_keyboardpic frame];
-    float h = kb.size.height - 24.0f, bw = 7.0f;
-    float y = kb.origin.y + 12.0f;
-    float lx = kb.origin.x - 22.0f, rx = kb.origin.x + kb.size.width + 15.0f;
-    if (lx < 4.0f) lx = 4.0f;
-    if (rx + bw > sz.width - 4.0f) rx = sz.width - 4.0f - bw;
-    float f = fraction > 1.0f ? 1.0f : (fraction < 0.0f ? 0.0f : fraction);
-    for (int k = 0; k < 2; k++) {
-        UIView *t = (k == 0) ? left : right;
-        if (t == nil) {
-            t = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
-            [t setTag:(k == 0) ? 7780 : 7782];
-            [t setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.5f]];
-            [[t layer] setCornerRadius:bw * 0.5f];
-            [[t layer] setBorderWidth:0.5f];
-            [[t layer] setBorderColor:[[UIColor colorWithWhite:1.0f alpha:0.18f] CGColor]];
-            [t setClipsToBounds:YES];
-            [t setUserInteractionEnabled:NO];
-            UIView *fill = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
-            [fill setTag:1];
-            [fill setBackgroundColor:[UIColor colorWithRed:0.30f green:0.62f blue:1.0f alpha:1.0f]];
-            [t addSubview:fill];
-            [self addSubview:t];
-            if (k == 0) left = t; else right = t;
-        }
-        [t setFrame:CGRectMake(k == 0 ? lx : rx, y, bw, h)];
-        UIView *fill = [t viewWithTag:1];
-        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:^{
-            [fill setFrame:CGRectMake(0, h * (1.0f - f), bw, h * f)];
-        } completion:nil];
-        [t setHidden:NO];
-        [self bringSubviewToFront:t];
+    [self SetSearchProgress:fraction label:label pluginId:nil];
+}
+
+- (void)SetSearchProgress:(float)fraction label:(NSString *)label pluginId:(NSString *)pid {
+    BOOL wasVisible = (m_srprog >= 0.0f);
+    if (fraction < 0.0f) {
+        m_srprog = -1.0f;
+        if (wasVisible) [m_srtableview reloadData];
+        return;
     }
+    if (fraction > 1.0f) fraction = 1.0f;
+    if (label != nil) { [m_srprogname release]; m_srprogname = [[[label componentsSeparatedByString:@" ("] objectAtIndex:0] copy]; }
+    if (pid != nil) { [m_srprogid release]; m_srprogid = [pid copy]; }
+    m_srprog = fraction;
+    if (!wasVisible && [m_srarrayplugin count] == 0) {      // the section appears with its header
+        [m_srtableview reloadData];
+        return;
+    }
+    UIView *fill = [m_srtableview viewWithTag:7791];
+    if (fill != nil && [fill superview] != nil) {
+        float w = [[fill superview] bounds].size.width * fraction;
+        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:^{
+            [fill setFrame:CGRectMake(0, 0, w, [[fill superview] bounds].size.height)];
+        } completion:nil];
+    }
+}
+
+// throttled refresh of the result list while covers arrive one by one
+- (void)ReloadResults {
+    if (m_srreloadpending) return;
+    m_srreloadpending = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        m_srreloadpending = NO;
+        [m_srtableview reloadData];
+    });
 }
 
 // transparent button over the backspace key: works whatever else is going on in the window (search running, bars shown)
@@ -315,8 +314,7 @@ BOOL gRfxPlayNow = NO;
         [b addTarget:self action:@selector(BackspacePressed) forControlEvents:UIControlEventTouchDown];
         [self addSubview:b];
     }
-    CGRect r = CGRectInset([self GetBackspaceRect:sz], -6.0f, -6.0f);
-    if ([[m_nonewtitles text] length] != 0) r.origin.y += 50.0f;      // the key picture is lower while that line shows
+    CGRect r = CGRectInset([self GetBackspaceRect:sz], -2.0f, -2.0f);   // stays clear of the clear-all (X) field
     [b setFrame:r];
     [b setHidden:NO];
     [self bringSubviewToFront:b];
@@ -527,6 +525,7 @@ BOOL gRfxPlayNow = NO;
         m_srarray = [[NSMutableArray alloc] init];
         m_srarrayother = [[NSMutableArray alloc] init];
         m_srarrayplugin = [[NSMutableArray alloc] init];
+        m_srprog = -1.0f;
         m_srbgview = [[UIView alloc] initWithFrame:CGRectZero];
         [self addSubview:m_srbgview];
         [m_srbgview setBackgroundColor:darkgray];
@@ -901,14 +900,14 @@ BOOL gRfxPlayNow = NO;
     // only sections that really have results are shown (an empty list still has its one section 0)
     int seen = -1;
     for (int s = 0; s < 3; s++) {
-        if ([[self SRArray:s] count] > 0) seen++;
+        if ([[self SRArray:s] count] > 0 || (s == 2 && m_srprog >= 0.0f)) seen++;
         if (seen == (int)tableSection) return s;
     }
     return 0;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    int n = ([m_srarray count] > 0 ? 1 : 0) + ([m_srarrayother count] > 0 ? 1 : 0) + ([m_srarrayplugin count] > 0 ? 1 : 0);
+    int n = ([m_srarray count] > 0 ? 1 : 0) + ([m_srarrayother count] > 0 ? 1 : 0) + (([m_srarrayplugin count] > 0 || m_srprog >= 0.0f) ? 1 : 0);
     return n > 0 ? n : 1;
 }
 
@@ -944,20 +943,27 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)tsection {
     int section = [self LogicalSection:tsection];
-    if ([[self SRArray:section] count] == 0) return nil;
+    if ([[self SRArray:section] count] == 0 && !(section == 2 && m_srprog >= 0.0f)) return nil;
     NSString *name; UIImage *icon = nil;
     if (section == 0) { name = @"Lokal"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.45f alpha:1.0f]); }
     else if (section == 1) { name = @"Weitere Ordner"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.35f alpha:1.0f]); }
     else {
-        name = [self SRSourceName];
+        name = [m_srarrayplugin count] ? [self SRSourceName] : (m_srprogname ? m_srprogname : @"Quelle");
         // the plugin's own icon: Documents/Plugins/<plugin id>.png (put there by the user); otherwise a round badge with the first letter
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-        NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:[self SRSourceId]] stringByAppendingPathExtension:@"png"];
+        NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""))] stringByAppendingPathExtension:@"png"];
         icon = [UIImage imageWithContentsOfFile:ip];
         if (icon == nil) icon = SRBadge([[name substringToIndex:1] uppercaseString], [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f]);
     }
     UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 26.0f)] autorelease];
     [v setBackgroundColor:[UIColor colorWithWhite:0.15f alpha:1.0f]];
+    if (section == 2 && m_srprog >= 0.0f) {
+        UIView *fill = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width * m_srprog, 26.0f)] autorelease];
+        [fill setBackgroundColor:[UIColor colorWithWhite:0.38f alpha:1.0f]];
+        [fill setUserInteractionEnabled:NO];
+        [fill setTag:7791];
+        [v addSubview:fill];
+    }
     UIImageView *iv = [[[UIImageView alloc] initWithImage:icon] autorelease];
     [iv setContentMode:UIViewContentModeScaleAspectFit];
     [iv setFrame:CGRectMake(12.0f, 3.0f, 20.0f, 20.0f)];
@@ -972,7 +978,8 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return ([[self SRArray:[self LogicalSection:section]] count] > 0) ? 26.0f : 0.0f;
+    int ls = [self LogicalSection:section];
+    return ([[self SRArray:ls] count] > 0 || (ls == 2 && m_srprog >= 0.0f)) ? 26.0f : 0.0f;
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
@@ -1098,6 +1105,7 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
         [m_srarrayplugin removeAllObjects];
         [m_srlock unlock];
         [m_srtableview performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO];
+        [[RfxPluginManager shared] SearchText:@"" done:nil];      // ends a running search bar
         [dbop release];
     }
     [pool release];
@@ -1155,9 +1163,9 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 - (CGRect)GetBackspaceRect:(CGSize)backspaceRect {
     CGRect kb = [m_keyboardpic frame];
     if (backspaceRect.width > backspaceRect.height) {
-        return CGRectMake(586.0f, kb.origin.y + 5.0f, 55.0f, 38.0f);
+        return CGRectMake(kb.origin.x + 525.0f, kb.origin.y + 8.0f, 46.0f, 34.0f);
     }
-    return CGRectMake(454.0f, kb.origin.y + 15.0f, 37.0f, 35.0f);
+    return CGRectMake(kb.origin.x + 371.0f, kb.origin.y + 8.0f, 40.0f, 38.0f);
 }
 
 - (CGRect)GetXFieldFrame {
@@ -1343,7 +1351,7 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
         return;
     }
     double now = CACurrentMediaTime();
-    if ((now - [m_pkiosk m_lastsongdragged]) < (double)[[m_pkiosk m_sve] m_songdragdelay]) {
+    if (!gRfxPlayNow && (now - [m_pkiosk m_lastsongdragged]) < (double)[[m_pkiosk m_sve] m_songdragdelay]) {
         [RfxPluginManager Toast:@"Zu schnell hintereinander (Drag-Verzögerung)."];
         [[m_pkiosk m_glv] ToggleKBAndRegister:[NSNumber numberWithInt:2]];
         return;
@@ -1366,7 +1374,7 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
         fr = [m_pkiosk MakeSmallFrame:fr];
         [[n m_imgv] setFrame:fr];
         RfxCrumb("AddItem AddClip");
-        [m_pkiosk AddClip:n atIndex:(gRfxPlayNow ? 0 : -1) fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
+        [m_pkiosk AddClip:n atIndex:-1 fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
         RfxCrumb("AddItem AddClip done");
         added = n;
         // no [n release] here: AddClip takes over the reference (it releases the clip itself and the queue array owns it);

@@ -371,6 +371,7 @@
 - (void)BuildCoverNowForPluginClipID:(long long)cid;
 - (void)SetPicture:(NSString *)path forPluginClipID:(long long)cid;
 - (void)RemovePluginPlaceholder:(long long)cid;
+- (void)ReplacePluginPlaceholder:(long long)cid withClip:(ClipObject *)clip;
 - (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid;
 - (void)LabelAni:(id)labelAni;
 - (void)ToggleKBAndRegister:(id)toggleKBAndRegister;

@@ -427,8 +427,11 @@ static BOOL gRfxWaterOn = NO;
     [m_arraylock unlock];
     if (!again) return;
     if ([self m_fingersonscreen] != 0) return;
-    if (timer != nil) return;
-    [self performSelector:@selector(drawView) withObject:nil afterDelay:0.04];
+    if (timer != nil || [self m_autospin]) return;
+    // exactly one pending follow-up frame: several callers of drawView used to start a chain each, the chains piled up and
+    // the carousel got sluggish after a while.  60 frames per second while something animates.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drawView) object:nil];
+    [self performSelector:@selector(drawView) withObject:nil afterDelay:(1.0 / 60.0)];
 }
 
 // Fills the paint order (the angular slot of every tile) and the picture order (index into the tile array).
@@ -748,7 +751,8 @@ static BOOL gRfxWaterOn = NO;
                 double nowT = CACurrentMediaTime();
                 double dt = (sLastT > 0.0 && nowT - sLastT < 0.5) ? (nowT - sLastT) : (1.0 / 60.0);
                 sLastT = nowT;
-                gRfxWaterShown += (gRfxWaterTarget - gRfxWaterShown) * (float)(1.0 - exp(-dt * 3.2));
+                gRfxWaterShown += (gRfxWaterTarget - gRfxWaterShown) * (float)(1.0 - exp(-dt * 2.2));
+                if (gRfxWaterTarget < 0.97f && gRfxWaterShown < gRfxWaterTarget + 0.02f) gRfxWaterShown += (float)(dt * 0.006);   // never stands still while loading
                 float lvl = gRfxWaterShown;
                 if (lvl < 0.0f) lvl = 0.0f;
                 if (lvl > 1.0f) lvl = 1.0f;
@@ -769,9 +773,9 @@ static BOOL gRfxWaterOn = NO;
                     if (wy < yBot) wy = yBot;
                     wv[(wi * 2) * 3 + 0] = wx; wv[(wi * 2) * 3 + 1] = wy;   wv[(wi * 2) * 3 + 2] = Zf;
                     wv[(wi * 2 + 1) * 3 + 0] = wx; wv[(wi * 2 + 1) * 3 + 1] = yBot; wv[(wi * 2 + 1) * 3 + 2] = Zf;
-                    // blue like the Qobuz buttons (approximation): bright blue surface, deeper blue ground
-                    wc[(wi * 2) * 4 + 0] = 0.30f * shade; wc[(wi * 2) * 4 + 1] = 0.60f * shade; wc[(wi * 2) * 4 + 2] = 1.00f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
-                    wc[(wi * 2 + 1) * 4 + 0] = 0.00f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.25f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 3] = wa;
+                    // gray tones like Radio.fx: light surface, darker ground
+                    wc[(wi * 2) * 4 + 0] = 0.80f * shade; wc[(wi * 2) * 4 + 1] = 0.80f * shade; wc[(wi * 2) * 4 + 2] = 0.80f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.85f;
+                    wc[(wi * 2 + 1) * 4 + 0] = 0.38f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.38f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.38f * shade; wc[(wi * 2 + 1) * 4 + 3] = wa;
                 }
                 glDisable(GL_TEXTURE_2D);
                 glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -782,8 +786,8 @@ static BOOL gRfxWaterOn = NO;
                 if (lvl > 0.01f && lvl < 0.995f) {
                     for (int wi = 0; wi <= WN; wi++) {
                         wv[(wi * 2 + 1) * 3 + 1] = wv[(wi * 2) * 3 + 1] - 0.012f * hh;
-                        wc[(wi * 2) * 4 + 0] = 0.75f * shade; wc[(wi * 2) * 4 + 1] = 0.88f * shade; wc[(wi * 2) * 4 + 2] = 1.0f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
-                        wc[(wi * 2 + 1) * 4 + 0] = 0.30f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.60f * shade; wc[(wi * 2 + 1) * 4 + 2] = 1.0f * shade; wc[(wi * 2 + 1) * 4 + 3] = 0.0f;
+                        wc[(wi * 2) * 4 + 0] = 0.95f * shade; wc[(wi * 2) * 4 + 1] = 0.95f * shade; wc[(wi * 2) * 4 + 2] = 0.95f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
+                        wc[(wi * 2 + 1) * 4 + 0] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 3] = 0.0f;
                     }
                     glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
                 }
@@ -1441,6 +1445,32 @@ static BOOL gRfxWaterOn = NO;
     int n = (int)[[self m_tilearray] count];
     if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
     [m_arraylock unlock];
+    [self ReInitThread];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self drawView]; });
+}
+
+// the loaded title (a normal library clip now) takes the place of its tile in the coverflow; nothing else changes in the
+// carousel (no narrowing to a folder).  Takes ownership of 'clip' (caller retained it).
+- (void)ReplacePluginPlaceholder:(long long)cid withClip:(ClipObject *)clip {
+    [self GetArrayLock:NO];
+    BOOL exists = NO, replaced = NO;
+    for (ClipObject *e in [self m_origarray])
+        if ([e ID] == [clip ID] && [e m_ipodid] == [clip m_ipodid] && [e m_folderid] != -88) { exists = YES; break; }
+    NSArray *lists = [NSArray arrayWithObjects:[self m_tilearray], [self m_origarray], nil];
+    for (NSMutableArray *arr in lists) {
+        for (int i = (int)[arr count] - 1; i >= 0; i--) {
+            ClipObject *c = [arr objectAtIndex:i];
+            if ([c ID] != cid || [c m_folderid] != -88 || [[c m_filepath] length] != 0) continue;
+            [cache removeObjectwithkey:[DEL CreateTextureKey:c]];
+            if (exists) { [arr removeObjectAtIndex:i]; }
+            else { [arr replaceObjectAtIndex:i withObject:clip]; replaced = YES; }
+        }
+    }
+    int n = (int)[[self m_tilearray] count];
+    if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
+    [m_arraylock unlock];
+    if (!replaced && !exists) { [self AddPicture:clip]; }      // placeholder not in the lists (filtered): add normally
+    else [clip release];
     [self ReInitThread];
     dispatch_async(dispatch_get_main_queue(), ^{ [self drawView]; });
 }
@@ -2363,6 +2393,7 @@ scroll:
     offset = o;
     [self drawView];
     [self setM_autospin:NO];
+    [self drawView];                      // restarts the frame chain (water, covers that are still loading)
     [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:1] afterDelay:0.01];
     [self ReInitThread];
 }

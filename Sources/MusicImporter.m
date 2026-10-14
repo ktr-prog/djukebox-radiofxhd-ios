@@ -110,11 +110,13 @@ static NSString *Tag(const OpusTags *t, const char *name) {
 // Files are MOVED into the library, so the next start does not import them twice.
 // Tags (title, artist, album, cover) come from the file; without tags "Artist - Title.ext" or the file name is used.
 static long long gLastClipID = 0, gLastFolderID = 0;
+static NSMutableArray *gLastClipIDs = nil;
 
 @implementation MusicImporter
 
 + (long long)lastImportedClipID { return gLastClipID; }
 + (long long)lastImportedFolderID { return gLastFolderID; }
++ (NSArray *)lastImportedClipIDs { return gLastClipIDs ? [NSArray arrayWithArray:gLastClipIDs] : [NSArray array]; }
 
 + (NSSet *)audioExtensions {
     return [NSSet setWithObjects:@"mp3", @"m4a", @"mp4", @"m4b", @"m4r", @"aac", @"adts", @"wav", @"wave", @"aif", @"aiff", @"aifc", @"caf", @"flac",
@@ -154,6 +156,8 @@ static long long gLastClipID = 0, gLastFolderID = 0;
 
 + (void)ImportForServer:(ServerEntry *)server {
     gLastClipID = 0; gLastFolderID = 0;
+    if (gLastClipIDs == nil) gLastClipIDs = [[NSMutableArray alloc] init];
+    [gLastClipIDs removeAllObjects];
     if (server == nil) return;
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
@@ -307,7 +311,7 @@ static long long gLastClipID = 0, gLastFolderID = 0;
             if (big) [big writeToFile:pic atomically:YES];
             if (small) [small writeToFile:[DEL BuildSmallPicpath:pic] atomically:YES];
             // the original app's sidecar picture (same name as the sound file) is what the importer will find next time
-            if ([db InsertClip:co withserverid:sid]) { imported++; gLastClipID = [co ID]; gLastFolderID = [folder folderid]; }
+            if ([db InsertClip:co withserverid:sid]) { imported++; gLastClipID = [co ID]; gLastFolderID = [folder folderid]; [gLastClipIDs addObject:[NSNumber numberWithLongLong:[co ID]]]; }
         } else {
             NSLog(@"[Import] could not move %@: %@", src, err);
         }

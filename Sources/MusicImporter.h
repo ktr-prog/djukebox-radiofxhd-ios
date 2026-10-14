@@ -12,4 +12,6 @@
 // IDs of the last song / folder written by ImportForServer: (0 if nothing was imported)
 + (long long)lastImportedClipID;
 + (long long)lastImportedFolderID;
+// IDs of all songs written by the last ImportForServer (NSNumber, in import order)
++ (NSArray *)lastImportedClipIDs;
 @end
