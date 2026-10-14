@@ -490,26 +490,15 @@ static NSString *RfxSafeName(NSString *s) {
 static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
 
 static BOOL gRfxBarBusy = NO;          // the bar in the search window is in use (search / loading)
-static int gRfxMsgToken = 0;
 
 static KeyboardView *RfxKB(void) {
     KioskView *kv = (KioskView *)gRfxToastHost;
     return [kv isKindOfClass:[KioskView class]] ? [[kv m_glv] GetKBView] : nil;
 }
 
-// No red banner any more: a message is written to the log and, while the search window is open, shown for a few
-// seconds as text on the (empty) bar of the search window.
+// No banner any more: messages only go to the log.
 static void RfxToast(NSString *t) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[Msg] %@", t);
-        KeyboardView *kb = RfxKB();
-        if (kb == nil || ![kb m_keyboardshown] || gRfxBarBusy) return;
-        int token = ++gRfxMsgToken;
-        [kb SetSearchProgress:0.0f label:t];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (token == gRfxMsgToken && !gRfxBarBusy) [RfxKB() SetSearchProgress:-1.0f label:nil];
-        });
-    });
+    NSLog(@"[Msg] %@", t);
 }
 
 // simple progress bar at the bottom of the kiosk view (text + bar), used while plugin titles are loaded
@@ -804,9 +793,6 @@ static RfxPluginManager *gRfxPM = nil;
             NSString *extra = isTrack ? @"" : ([[it objectForKey:@"track_count"] intValue] > 0 ?
                 [NSString stringWithFormat:@" · Album, %d Titel", [[it objectForKey:@"track_count"] intValue]] : @" · Album");
             [c setM_title:([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")];
-            NSString *srcname = [it objectForKey:@"_source"];
-            if ([srcname isKindOfClass:[NSString class]] && [srcname length])
-                extra = [extra stringByAppendingFormat:@"  ·  %@", srcname];
             [c setM_interpret:[artist stringByAppendingString:extra]];
             [c setM_albumname:([it objectForKey:@"album"] && [[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
             [c setM_picturepath:[sp objectForKey:@"pic"]];
@@ -856,6 +842,7 @@ static RfxPluginManager *gRfxPM = nil;
     [glv SetWaterForClipID:cid level:0.04f];
     [glv AddPicture:pc];                                  // takes over the reference
     [glv ReInitThread];                                   // the loader thread builds the cover now
+    [glv BuildCoverNowForPluginClipID:cid];               // and the cover is also built right here, so it shows at once
     ClipObject *target = [[ClipObject alloc] init];
     [target setID:cid];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -920,6 +907,14 @@ static RfxPluginManager *gRfxPM = nil;
         }
         [wglv SetWaterForClipID:wid level:0.15f];
         int dc = m_doneCount, tot = m_total;
+        {   // a plugin can say how long the delivered file really is (e.g. a 30 s preview of a longer title)
+            id rd = [r objectForKey:@"duration_ms"];
+            if ([rd isKindOfClass:[NSNumber class]] && [rd intValue] > 0) {
+                NSMutableDictionary *m2 = [NSMutableDictionary dictionaryWithDictionary:it];
+                [m2 setObject:rd forKey:@"duration_ms"];
+                it = m2;
+            }
+        }
         // a plugin can mark a title as "stream only" (resolve result "cache": false): it is only buffered in the
         // temporary folder for playing and is never put into the library
         id cacheFlag = [r objectForKey:@"cache"];
@@ -2183,7 +2178,8 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
         NSMutableArray *tiles = [[NSMutableArray alloc] init];
         [tiles addObjectsFromArray:[m_glv m_tilearray]];
         for (NSInteger i = (NSInteger)[tiles count] - 1; i >= 0; i--) {
-            if ([[tiles objectAtIndex:i] ID] == -5) [tiles removeObjectAtIndex:i];
+            ClipObject *tc = [tiles objectAtIndex:i];
+            if ([tc ID] == -5 || ([tc m_folderid] == -88 && [[tc m_filepath] length] == 0)) [tiles removeObjectAtIndex:i];
         }
         if ([tiles count] != 0) {
             // continue with the song that was playing when the app was closed (first start only)
@@ -2378,6 +2374,7 @@ static void RemoveClipViews(ClipObject *c) {
     int flags = [m_sve StateFlags];
     int insertAt = (indexArg < 0) ? count : indexArg;
     BOOL skipDupCheck = ((flags & 0x20) == 0) ? addanyway : ((flags & 0xff) != 0);
+    if (gRfxPlayNow) skipDupCheck = YES;
     if (!skipDupCheck && ([clip ID] != 0 || [clip m_ipodid] != 0)) {
         // the same song may only be in the queue once
         for (NSUInteger i = 0; i < [[self m_clips] count]; i++) {
@@ -2396,7 +2393,12 @@ static void RemoveClipViews(ClipObject *c) {
 
     int pos;
     BOOL replaceFirst = NO;
-    if ((flags & 4) != 0) {
+    if (gRfxPlayNow && count > 0) {
+        // a title the user just chose replaces the one that is playing now (cross fade), whatever state the fade flag is in
+        m_fadingover = NO;
+        replaceFirst = YES;
+        pos = 0;
+    } else if ((flags & 4) != 0) {
         pos = count;
     } else if (insertAt > 0) {
         pos = (insertAt < count) ? insertAt : count;
@@ -2438,6 +2440,8 @@ static void RemoveClipViews(ClipObject *c) {
             if ([clip m_swapimgv] != nil)
                 [self performSelector:@selector(sendSubviewToBack:) withObject:[clip m_swapimgv] afterDelay:0.67];
         }
+        // nothing is playing and the queue was empty: the chosen title starts by itself
+        if (gRfxPlayNow && count == 0) [self performSelector:@selector(StartFirstFolderSong:) withObject:[NSNumber numberWithInt:0] afterDelay:0.7];
         [clip release];
         return;
     }

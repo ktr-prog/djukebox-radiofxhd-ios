@@ -743,35 +743,50 @@ static BOOL gRfxWaterOn = NO;
             // Water on the cover of a title that is loading: it fills up from the bottom like a glass (the level follows the
             // real progress smoothly), the surface ripples.
             if (gRfxWaterOn && [clipForId ID] == gRfxWaterID && [tile percent] > 99) {
-                gRfxWaterShown += (gRfxWaterTarget - gRfxWaterShown) * 0.12f;
+                // time based easing (same speed at any frame rate) towards the real progress
+                static double sLastT = 0.0;
+                double nowT = CACurrentMediaTime();
+                double dt = (sLastT > 0.0 && nowT - sLastT < 0.5) ? (nowT - sLastT) : (1.0 / 60.0);
+                sLastT = nowT;
+                gRfxWaterShown += (gRfxWaterTarget - gRfxWaterShown) * (float)(1.0 - exp(-dt * 3.2));
                 float lvl = gRfxWaterShown;
                 if (lvl < 0.0f) lvl = 0.0f;
                 if (lvl > 1.0f) lvl = 1.0f;
-                enum { WN = 28 };
+                enum { WN = 72 };
                 GLfloat wv[(WN + 1) * 2 * 3];
                 GLfloat wc[(WN + 1) * 2 * 4];
                 float topBase = yBot + lvl * (yTop - yBot);
-                float amp = 0.045f * hh * ((lvl > 0.01f && lvl < 0.99f) ? 1.0f : 0.0f);
-                double ph = CACurrentMediaTime() * 3.4;
-                float wa = (float)alpha * 0.62f;
+                float edge = (lvl < 0.08f) ? lvl / 0.08f : ((lvl > 0.92f) ? (1.0f - lvl) / 0.08f : 1.0f);   // calm at both ends
+                float amp = 0.030f * hh * edge;
+                double ph = nowT * 2.1;
+                float wa = (float)alpha * 0.66f;
                 for (int wi = 0; wi <= WN; wi++) {
                     float fr = (float)wi / (float)WN;
                     float wx = x0 + (x1 - x0) * fr;
-                    float wave = amp * (float)(sin(ph + fr * 9.0) + 0.5 * sin(ph * 1.7 - fr * 14.0));
+                    float wave = amp * (float)(0.65 * sin(ph + fr * 7.0) + 0.35 * sin(ph * 1.45 - fr * 11.0 + 1.3));
                     float wy = topBase + wave;
                     if (wy > yTop) wy = yTop;
                     if (wy < yBot) wy = yBot;
                     wv[(wi * 2) * 3 + 0] = wx; wv[(wi * 2) * 3 + 1] = wy;   wv[(wi * 2) * 3 + 2] = Zf;
                     wv[(wi * 2 + 1) * 3 + 0] = wx; wv[(wi * 2 + 1) * 3 + 1] = yBot; wv[(wi * 2 + 1) * 3 + 2] = Zf;
-                    // surface: light blue, ground: deeper blue
-                    wc[(wi * 2) * 4 + 0] = 0.55f * shade; wc[(wi * 2) * 4 + 1] = 0.82f * shade; wc[(wi * 2) * 4 + 2] = 1.0f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.85f;
-                    wc[(wi * 2 + 1) * 4 + 0] = 0.05f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.40f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.85f * shade; wc[(wi * 2 + 1) * 4 + 3] = wa;
+                    // blue like the Qobuz buttons (approximation): bright blue surface, deeper blue ground
+                    wc[(wi * 2) * 4 + 0] = 0.30f * shade; wc[(wi * 2) * 4 + 1] = 0.60f * shade; wc[(wi * 2) * 4 + 2] = 1.00f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
+                    wc[(wi * 2 + 1) * 4 + 0] = 0.00f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.25f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.80f * shade; wc[(wi * 2 + 1) * 4 + 3] = wa;
                 }
                 glDisable(GL_TEXTURE_2D);
                 glDisableClientState(GL_TEXTURE_COORD_ARRAY);
                 glVertexPointer(3, GL_FLOAT, 0, wv);
                 glColorPointer(4, GL_FLOAT, 0, wc);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
+                // thin bright line on the surface
+                if (lvl > 0.01f && lvl < 0.995f) {
+                    for (int wi = 0; wi <= WN; wi++) {
+                        wv[(wi * 2 + 1) * 3 + 1] = wv[(wi * 2) * 3 + 1] - 0.012f * hh;
+                        wc[(wi * 2) * 4 + 0] = 0.75f * shade; wc[(wi * 2) * 4 + 1] = 0.88f * shade; wc[(wi * 2) * 4 + 2] = 1.0f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.9f;
+                        wc[(wi * 2 + 1) * 4 + 0] = 0.30f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.60f * shade; wc[(wi * 2 + 1) * 4 + 2] = 1.0f * shade; wc[(wi * 2 + 1) * 4 + 3] = 0.0f;
+                    }
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
+                }
                 glEnableClientState(GL_TEXTURE_COORD_ARRAY);
                 glEnable(GL_TEXTURE_2D);
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
@@ -1226,7 +1241,10 @@ static BOOL gRfxWaterOn = NO;
 
 - (void)RemoveVirtBrandingSong:(NSMutableArray *)virtBrandingSong {
     for (int i = (int)[virtBrandingSong count] - 1; i >= 0; i--) {
-        if ([[virtBrandingSong objectAtIndex:i] ID] == -5) [virtBrandingSong removeObjectAtIndex:i];
+        ClipObject *c = [virtBrandingSong objectAtIndex:i];
+        if ([c ID] == -5) { [virtBrandingSong removeObjectAtIndex:i]; continue; }
+        // a plugin title that is still loading has no file: it must never be picked to play by itself
+        if ([c m_folderid] == -88 && [[c m_filepath] length] == 0) [virtBrandingSong removeObjectAtIndex:i];
     }
 }
 
@@ -1292,6 +1310,7 @@ static BOOL gRfxWaterOn = NO;
         } else if ([[self m_tilearray] count] != 0) {
             pick = [[self m_tilearray] objectAtIndex:0];
             if ([pick m_tracks] != nil && [[pick m_tracks] count] != 0) pick = [[pick m_tracks] objectAtIndex:0];
+            if ([pick m_folderid] == -88 && [[pick m_filepath] length] == 0) pick = nil;
         }
         if (pick != nil) {
             result = [[ClipObject alloc] init];
@@ -1427,6 +1446,24 @@ static BOOL gRfxWaterOn = NO;
 }
 
 // the file of a title that was loaded: from now on the cover in the coverflow is a normal playable cover
+// builds the texture of a plugin tile right now on the main thread (the loader thread may be parked or busy)
+- (void)BuildCoverNowForPluginClipID:(long long)cid {
+    [EAGLContext setCurrentContext:context];
+    [self GetArrayLock:YES];
+    int idx = -1;
+    for (int i = 0; i < (int)[[self m_tilearray] count]; i++) {
+        ClipObject *c = [[self m_tilearray] objectAtIndex:i];
+        if ([c ID] == cid && [c m_folderid] == -88) { idx = i; break; }
+    }
+    if (idx >= 0) {
+        ClipObject *c = [[self m_tilearray] objectAtIndex:idx];
+        [cache removeObjectwithkey:[DEL CreateTextureKey:c]];
+        [self getTileAtIndex:idx withCreate:YES];
+    }
+    [m_arraylock unlock];
+    [self drawView];
+}
+
 // the real cover of a title arrived: set it on the tile and let the texture be built again
 - (void)SetPicture:(NSString *)path forPluginClipID:(long long)cid {
     [self GetArrayLock:NO];
@@ -1437,7 +1474,7 @@ static BOOL gRfxWaterOn = NO;
         }
     }
     [m_arraylock unlock];
-    dispatch_async(dispatch_get_main_queue(), ^{ [self ReInitThread]; [self drawView]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [self ReInitThread]; [self BuildCoverNowForPluginClipID:cid]; });
 }
 
 - (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid {

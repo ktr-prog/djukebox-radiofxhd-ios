@@ -137,6 +137,8 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
 - (void)SetImagesOnSlider:(UISlider *)imagesOnSlider;
 - (void)SetResortFlag:(int)resortFlag withval:(BOOL)val;
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label;
+- (void)LayoutBackspaceButton;
+- (void)BackspacePressed;
 - (NSMutableArray *)SRArray:(int)section;
 - (int)LogicalSection:(NSInteger)tableSection;
 - (void)OpenConfigUrl:(NSURLRequest *)openConfigUrl;

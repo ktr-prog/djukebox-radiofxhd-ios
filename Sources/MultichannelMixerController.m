@@ -49,6 +49,9 @@ static void MCM_FloatFormat(AudioStreamBasicDescription *d, double rate) {
     d->mBytesPerPacket = 4;
 }
 
+// the engine / hardware rate the app asks for (every title is 44.1 kHz, so nothing is resampled)
+#define kMCMFixedRate 44100.0
+
 // ---- Render callback (@0xbdbb4) -------------------------------------------------------------
 // refcon points at mSoundBuffer[0]; the bus number selects the entry.
 static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioActionFlags,
@@ -189,6 +192,8 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     OSStatus r;
     // The graph runs at the hardware rate, so a file is resampled at most once (and not at all when it already
     // has that rate); everything inside is 32-bit float.
+    [[AVAudioSession sharedInstance] setPreferredSampleRate:kMCMFixedRate error:nil];    // ask for 44.1 kHz right away
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
     mGraphRate = [[AVAudioSession sharedInstance] sampleRate];
     if (mGraphRate < 8000.0) mGraphRate = 44100.0;
 
@@ -385,6 +390,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 // request (built-in speakers often stay at 48 kHz) nothing changes and the file is resampled once, as before.
 // Overlapping songs (crossfades) share one graph rate, so the second song is converted to the first one's rate.
 - (void)AdaptGraphToRate:(double)rate forBus:(int)bus {
+    rate = kMCMFixedRate;           // DEVIATION: the engine always runs at 44.1 kHz (all titles are 44.1 kHz)
     if (!mGraph || rate < 8000.0) return;
     if (fabs(rate - mGraphRate) < 1.0) return;
     for (int i = 0; i < kMCMNumBuses; i++)
@@ -540,10 +546,19 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
         pthread_mutex_unlock(&mMutexExtAudioFileRead);
         if (e != noErr) { pthread_mutex_unlock(&gBusMutex[bus]); [self ErrorPlayingFile:bus]; break; }
         if (n == 0) { eof = YES; pthread_mutex_unlock(&gBusMutex[bus]); break; }
+        // Tail fade: the last 1.5 s of every file fade to silence in the data itself, so a song never stops abruptly
+        // while still loud, even when the cross fade started too late (or the file is shorter than its tags say).
+        UInt32 tailFrames = (UInt32)(1.5 * client.mSampleRate);
         for (UInt32 i = 0; i < n; i++) {
             UInt32 idx = (w + i) & (kMCMRingFrames - 1);
-            ringL[idx] = tmp[0][i];
-            ringR[idx] = (channels > 1) ? tmp[1][i] : tmp[0][i];
+            float g = 1.0f;
+            UInt64 pos = (UInt64)w + i;
+            if (convertedFrames > tailFrames && pos + tailFrames > convertedFrames) {
+                UInt64 left = (pos >= convertedFrames) ? 0 : (convertedFrames - pos);
+                g = (float)left / (float)tailFrames;
+            }
+            ringL[idx] = tmp[0][i] * g;
+            ringR[idx] = ((channels > 1) ? tmp[1][i] : tmp[0][i]) * g;
         }
         __atomic_store_n(&sb->wpos, w + n, __ATOMIC_RELEASE);
         if (!gMCMReported) {

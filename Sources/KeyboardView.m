@@ -73,6 +73,7 @@ BOOL gRfxPlayNow = NO;
     r = [self GetSearchScrollerFrame:fitSubViews];
     [m_srtableview setFrame:r];
     m_backspacerect = [self GetBackspaceRect:fitSubViews];
+    [self LayoutBackspaceButton];
     [self FitVolumeElements:fitSubViews];
     r = [self GetNoNewTitlesFrame:fitSubViews];
     [m_nonewtitles setFrame:r];
@@ -128,6 +129,9 @@ BOOL gRfxPlayNow = NO;
 }
 
 - (void)DeleteSearchText30Sec {
+    // DEVIATION: the original cleared the search text 30 s after the last key.  The text and the results now stay until
+    // the user clears them, also after the window was closed and opened again.
+    return;
     if ([[self m_searchlabel] text] != nil) {
         if ([[[self m_searchlabel] text] length] != 0) {
             [[self m_searchlabel] setText:@""];
@@ -247,47 +251,75 @@ BOOL gRfxPlayNow = NO;
     }
 }
 
-// progress bar of the plugin search, drawn inside the search window under the text field (dark track, light fill,
-// same look as the field); fraction < 0 hides it
+// Progress of the plugin search / of a download: two slim vertical bars left and right of the search window (there is
+// room beside it, so nothing covers the keyboard).  Dark rounded track, bright fill rising from the bottom like the
+// water in the carousel.  fraction < 0 hides them.  The text is not shown any more.
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label {
-    UIView *track = [self viewWithTag:7780];
-    UILabel *lab = (UILabel *)[self viewWithTag:7781];
-    if (fraction < 0.0f) { [track setHidden:YES]; [lab setHidden:YES]; return; }
+    UIView *left = [self viewWithTag:7780], *right = [self viewWithTag:7782];
+    if (fraction < 0.0f) { [left setHidden:YES]; [right setHidden:YES]; return; }
     CGSize sz = [DEL GetiPadSize];
-    CGRect tf = [self GetTextfieldFrame:sz];
     CGRect kb = [m_keyboardpic frame];
-    BOOL land = (sz.width > sz.height);
-    CGRect tr = CGRectMake(tf.origin.x - (land ? 120.0f : 70.0f), tf.origin.y + tf.size.height + 4.0f, tf.size.width + (land ? 240.0f : 140.0f), 5.0f);
-    if (tr.origin.x < kb.origin.x + 10.0f) tr.origin.x = kb.origin.x + 10.0f;
-    if (track == nil) {
-        track = [[[UIView alloc] initWithFrame:tr] autorelease];
-        [track setTag:7780];
-        [track setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.45f]];
-        [[track layer] setCornerRadius:2.5f];
-        [track setClipsToBounds:YES];
-        [track setUserInteractionEnabled:NO];
-        UIView *fill = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, tr.size.height)] autorelease];
-        [fill setTag:1];
-        [fill setBackgroundColor:[UIColor colorWithWhite:0.80f alpha:1.0f]];
-        [track addSubview:fill];
-        [self addSubview:track];
-        lab = [[[UILabel alloc] init] autorelease];
-        [lab setTag:7781];
-        [lab setBackgroundColor:[UIColor clearColor]];
-        [lab setTextColor:[UIColor colorWithWhite:0.7f alpha:1.0f]];
-        [lab setFont:[UIFont systemFontOfSize:11.0f]];
-        [lab setTextAlignment:NSTextAlignmentCenter];
-        [lab setUserInteractionEnabled:NO];
-        [self addSubview:lab];
+    float h = kb.size.height - 24.0f, bw = 7.0f;
+    float y = kb.origin.y + 12.0f;
+    float lx = kb.origin.x - 22.0f, rx = kb.origin.x + kb.size.width + 15.0f;
+    if (lx < 4.0f) lx = 4.0f;
+    if (rx + bw > sz.width - 4.0f) rx = sz.width - 4.0f - bw;
+    float f = fraction > 1.0f ? 1.0f : (fraction < 0.0f ? 0.0f : fraction);
+    for (int k = 0; k < 2; k++) {
+        UIView *t = (k == 0) ? left : right;
+        if (t == nil) {
+            t = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+            [t setTag:(k == 0) ? 7780 : 7782];
+            [t setBackgroundColor:[UIColor colorWithWhite:0.0f alpha:0.5f]];
+            [[t layer] setCornerRadius:bw * 0.5f];
+            [[t layer] setBorderWidth:0.5f];
+            [[t layer] setBorderColor:[[UIColor colorWithWhite:1.0f alpha:0.18f] CGColor]];
+            [t setClipsToBounds:YES];
+            [t setUserInteractionEnabled:NO];
+            UIView *fill = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+            [fill setTag:1];
+            [fill setBackgroundColor:[UIColor colorWithRed:0.30f green:0.62f blue:1.0f alpha:1.0f]];
+            [t addSubview:fill];
+            [self addSubview:t];
+            if (k == 0) left = t; else right = t;
+        }
+        [t setFrame:CGRectMake(k == 0 ? lx : rx, y, bw, h)];
+        UIView *fill = [t viewWithTag:1];
+        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:^{
+            [fill setFrame:CGRectMake(0, h * (1.0f - f), bw, h * f)];
+        } completion:nil];
+        [t setHidden:NO];
+        [self bringSubviewToFront:t];
     }
-    [track setFrame:tr];
-    [lab setFrame:CGRectMake(tr.origin.x, tr.origin.y + 6.0f, tr.size.width, 14.0f)];
-    [lab setText:label ? label : @""];
-    UIView *fill = [track viewWithTag:1];
-    float f = fraction > 1.0f ? 1.0f : fraction;
-    [fill setFrame:CGRectMake(0, 0, tr.size.width * f, tr.size.height)];
-    [track setHidden:NO]; [lab setHidden:NO];
-    [self bringSubviewToFront:track]; [self bringSubviewToFront:lab];
+}
+
+// transparent button over the backspace key: works whatever else is going on in the window (search running, bars shown)
+- (void)BackspacePressed {
+    NSString *cur = [[self m_searchlabel] text];
+    if ([cur length] == 0) return;
+    [[self m_searchlabel] setText:[cur substringToIndex:[cur length] - 1]];
+    [self SetCursorFrame];
+    [m_xfield setHidden:([[[self m_searchlabel] text] length] == 0)];
+    [m_parent BeginSearch:[[self m_searchlabel] text]];
+    [self RestartKeyboardtimer];
+}
+
+- (void)LayoutBackspaceButton {
+    if (m_showwhat != 2) { [[self viewWithTag:7790] setHidden:YES]; return; }
+    CGSize sz = [DEL GetiPadSize];
+    UIButton *b = (UIButton *)[self viewWithTag:7790];
+    if (b == nil) {
+        b = [UIButton buttonWithType:UIButtonTypeCustom];
+        [b setTag:7790];
+        [b setBackgroundColor:[UIColor clearColor]];
+        [b addTarget:self action:@selector(BackspacePressed) forControlEvents:UIControlEventTouchDown];
+        [self addSubview:b];
+    }
+    CGRect r = CGRectInset([self GetBackspaceRect:sz], -6.0f, -6.0f);
+    if ([[m_nonewtitles text] length] != 0) r.origin.y += 50.0f;      // the key picture is lower while that line shows
+    [b setFrame:r];
+    [b setHidden:NO];
+    [self bringSubviewToFront:b];
 }
 
 - (void)ShowElements:(int)elements {
@@ -345,6 +377,7 @@ BOOL gRfxPlayNow = NO;
             [m_srtableview setFrame:r];
             r = [self GetNoNewTitlesFrame:sz];
             [m_nonewtitles setFrame:r];
+            [self LayoutBackspaceButton];
             break;
         }
         default:
@@ -865,17 +898,18 @@ BOOL gRfxPlayNow = NO;
 }
 
 - (int)LogicalSection:(NSInteger)tableSection {
+    // only sections that really have results are shown (an empty list still has its one section 0)
     int seen = -1;
     for (int s = 0; s < 3; s++) {
-        BOOL shown = (s == 0) || ([[self SRArray:s] count] > 0);
-        if (shown) seen++;
+        if ([[self SRArray:s] count] > 0) seen++;
         if (seen == (int)tableSection) return s;
     }
     return 0;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1 + ([m_srarrayother count] > 0 ? 1 : 0) + ([m_srarrayplugin count] > 0 ? 1 : 0);
+    int n = ([m_srarray count] > 0 ? 1 : 0) + ([m_srarrayother count] > 0 ? 1 : 0) + ([m_srarrayplugin count] > 0 ? 1 : 0);
+    return n > 0 ? n : 1;
 }
 
 - (NSString *)SRSourceName {
@@ -888,45 +922,57 @@ BOOL gRfxPlayNow = NO;
 
 // small round badge: a note for local hits, the first letter of the source for plugin hits
 static UIImage *SRBadge(NSString *glyph, UIColor *color) {
-    CGSize sz = CGSizeMake(16.0f, 16.0f);
+    CGSize sz = CGSizeMake(20.0f, 20.0f);
     UIGraphicsBeginImageContextWithOptions(sz, NO, 0.0f);
     [color setFill];
-    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, 16.0f, 16.0f)] fill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, 20.0f, 20.0f)] fill];
     NSDictionary *at = [NSDictionary dictionaryWithObjectsAndKeys:[UIFont boldSystemFontOfSize:10.0f], NSFontAttributeName, [UIColor whiteColor], NSForegroundColorAttributeName, nil];
     CGSize ts = [glyph sizeWithAttributes:at];
-    [glyph drawAtPoint:CGPointMake((16.0f - ts.width) * 0.5f, (16.0f - ts.height) * 0.5f) withAttributes:at];
+    [glyph drawAtPoint:CGPointMake((20.0f - ts.width) * 0.5f, (20.0f - ts.height) * 0.5f) withAttributes:at];
     UIImage *im = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     return im;
 }
 
+- (NSString *)SRSourceId {
+    ClipObject *c = [m_srarrayplugin count] ? [m_srarrayplugin objectAtIndex:0] : nil;
+    NSData *j = [[c m_information] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *d = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
+    NSString *n = [d isKindOfClass:[NSDictionary class]] ? [d objectForKey:@"_plugin"] : nil;
+    return [n isKindOfClass:[NSString class]] ? n : @"";
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)tsection {
     int section = [self LogicalSection:tsection];
-    NSString *name; NSString *glyph; UIColor *col;
-    if (section == 0) { name = @"Ergebnisse: lokal"; glyph = @"\u266A"; col = [UIColor colorWithWhite:0.45f alpha:1.0f]; }
-    else if (section == 1) { name = @"Ergebnisse: weitere lokale Ordner"; glyph = @"\u266A"; col = [UIColor colorWithWhite:0.35f alpha:1.0f]; }
+    if ([[self SRArray:section] count] == 0) return nil;
+    NSString *name; UIImage *icon = nil;
+    if (section == 0) { name = @"Lokal"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.45f alpha:1.0f]); }
+    else if (section == 1) { name = @"Weitere Ordner"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.35f alpha:1.0f]); }
     else {
-        NSString *sn = [self SRSourceName];
-        name = [NSString stringWithFormat:@"Ergebnisse: %@", sn];
-        glyph = [[sn substringToIndex:1] uppercaseString];
-        col = [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f];
+        name = [self SRSourceName];
+        // the plugin's own icon: Documents/Plugins/<plugin id>.png (put there by the user); otherwise a round badge with the first letter
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+        NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:[self SRSourceId]] stringByAppendingPathExtension:@"png"];
+        icon = [UIImage imageWithContentsOfFile:ip];
+        if (icon == nil) icon = SRBadge([[name substringToIndex:1] uppercaseString], [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f]);
     }
-    UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 24.0f)] autorelease];
+    UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 26.0f)] autorelease];
     [v setBackgroundColor:[UIColor colorWithWhite:0.15f alpha:1.0f]];
-    UIImageView *iv = [[[UIImageView alloc] initWithImage:SRBadge(glyph, col)] autorelease];
-    [iv setFrame:CGRectMake(12.0f, 4.0f, 16.0f, 16.0f)];
+    UIImageView *iv = [[[UIImageView alloc] initWithImage:icon] autorelease];
+    [iv setContentMode:UIViewContentModeScaleAspectFit];
+    [iv setFrame:CGRectMake(12.0f, 3.0f, 20.0f, 20.0f)];
     [v addSubview:iv];
-    UILabel *l = [[[UILabel alloc] initWithFrame:CGRectMake(36.0f, 2.0f, [tableView frame].size.width - 48.0f, 20.0f)] autorelease];
+    UILabel *l = [[[UILabel alloc] initWithFrame:CGRectMake(40.0f, 3.0f, [tableView frame].size.width - 52.0f, 20.0f)] autorelease];
     [l setText:name];
-    [l setFont:[UIFont boldSystemFontOfSize:12.0f]];
-    [l setTextColor:[UIColor colorWithWhite:0.75f alpha:1.0f]];
+    [l setFont:[UIFont boldSystemFontOfSize:13.0f]];
+    [l setTextColor:[UIColor colorWithWhite:0.8f alpha:1.0f]];
     [l setBackgroundColor:[UIColor clearColor]];
     [v addSubview:l];
     return v;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 24.0f;
+    return ([[self SRArray:[self LogicalSection:section]] count] > 0) ? 26.0f : 0.0f;
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
