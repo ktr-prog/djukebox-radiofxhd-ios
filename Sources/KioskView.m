@@ -489,40 +489,31 @@ static NSString *RfxSafeName(NSString *s) {
 
 static UIView *gRfxToastHost = nil;   // the kiosk view (the window can be hidden behind other windows)
 
+static BOOL gRfxBarBusy = NO;          // the bar in the search window is in use (search / loading)
+static int gRfxMsgToken = 0;
+
+static KeyboardView *RfxKB(void) {
+    KioskView *kv = (KioskView *)gRfxToastHost;
+    return [kv isKindOfClass:[KioskView class]] ? [[kv m_glv] GetKBView] : nil;
+}
+
+// No red banner any more: a message is written to the log and, while the search window is open, shown for a few
+// seconds as text on the (empty) bar of the search window.
 static void RfxToast(NSString *t) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[Toast] %@", t);
-        UIView *w = gRfxToastHost;
-        if (w == nil) w = [[UIApplication sharedApplication] keyWindow];
-        if (w == nil) w = [[[UIApplication sharedApplication] windows] lastObject];
-        if (w == nil) return;
-        UILabel *l = (UILabel *)[w viewWithTag:7771];
-        if (l == nil) {
-            l = [[[UILabel alloc] init] autorelease];
-            [l setTag:7771];
-            [l setTextAlignment:NSTextAlignmentCenter];
-            [l setNumberOfLines:2];
-            [l setFont:[UIFont boldSystemFontOfSize:16.0f]];
-            [l setTextColor:[UIColor whiteColor]];
-            [l setBackgroundColor:[UIColor colorWithRed:0.75f green:0.1f blue:0.1f alpha:0.95f]];
-            [[l layer] setCornerRadius:8.0f];
-            [l setClipsToBounds:YES];
-            [l setUserInteractionEnabled:NO];
-            [[l layer] setZPosition:100000.0f];
-            [w addSubview:l];
-        }
-        CGRect wb = [w bounds];
-        [l setFrame:CGRectMake(40.0f, wb.size.height * 0.5f - 25.0f, wb.size.width - 80.0f, 50.0f)];
-        [l setText:t];
-        [w bringSubviewToFront:l];
-        [[l layer] removeAllAnimations];
-        [l setAlpha:1.0f];
-        [UIView animateWithDuration:0.6 delay:4.0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ [l setAlpha:0.0f]; } completion:nil];
+        NSLog(@"[Msg] %@", t);
+        KeyboardView *kb = RfxKB();
+        if (kb == nil || ![kb m_keyboardshown] || gRfxBarBusy) return;
+        int token = ++gRfxMsgToken;
+        [kb SetSearchProgress:0.0f label:t];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (token == gRfxMsgToken && !gRfxBarBusy) [RfxKB() SetSearchProgress:-1.0f label:nil];
+        });
     });
 }
 
 // simple progress bar at the bottom of the kiosk view (text + bar), used while plugin titles are loaded
-static void RfxProgress(NSString *text, float frac) {
+static void RfxProgressBox(NSString *text, float frac) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *w = gRfxToastHost;
         if (w == nil) return;
@@ -557,11 +548,28 @@ static void RfxProgress(NSString *text, float frac) {
     });
 }
 
-static void RfxProgressHide(void) {
+static void RfxProgressHideBox(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *box = [gRfxToastHost viewWithTag:7772];
         if (box == nil) return;
         [UIView animateWithDuration:0.4 animations:^{ [box setAlpha:0.0f]; }];
+    });
+}
+
+// loading progress: shown on the bar of the search window (its style); without the search window on a plain bar
+static void RfxProgress(NSString *text, float frac) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gRfxBarBusy = YES;
+        KeyboardView *kb = RfxKB();
+        if (kb != nil && [kb m_keyboardshown]) [kb SetSearchProgress:frac label:text];
+        else RfxProgressBox(text, frac);
+    });
+}
+static void RfxProgressHide(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gRfxBarBusy = NO;
+        [RfxKB() SetSearchProgress:-1.0f label:nil];
+        RfxProgressHideBox();
     });
 }
 
@@ -672,6 +680,7 @@ static RfxPluginManager *gRfxPM = nil;
 // progress bar for the plugin search: the bar creeps forward while the search / cover loading runs, then disappears
 - (void)SearchBusy:(NSString *)phase {
     [m_sphase release]; m_sphase = [phase copy];
+    gRfxBarBusy = YES;
     if (m_stimer == nil) {
         m_st0 = CACurrentMediaTime();
         m_stimer = [NSTimer scheduledTimerWithTimeInterval:0.1 target:self selector:@selector(SearchTick) userInfo:nil repeats:YES];
@@ -685,7 +694,8 @@ static RfxPluginManager *gRfxPM = nil;
 - (void)SearchIdle {
     [m_stimer invalidate]; m_stimer = nil;
     [m_sphase release]; m_sphase = nil;
-    [[[m_kv m_glv] GetKBView] SetSearchProgress:-1.0f label:nil];
+    gRfxBarBusy = m_busy;
+    if (!m_busy) [[[m_kv m_glv] GetKBView] SetSearchProgress:-1.0f label:nil];
 }
 
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *, NSArray *))done {
@@ -845,6 +855,7 @@ static RfxPluginManager *gRfxPM = nil;
     if (jr != nil) [pc setM_information:[[[NSString alloc] initWithData:jr encoding:NSUTF8StringEncoding] autorelease]];
     [glv SetWaterForClipID:cid level:0.04f];
     [glv AddPicture:pc];                                  // takes over the reference
+    [glv ReInitThread];                                   // the loader thread builds the cover now
     ClipObject *target = [[ClipObject alloc] init];
     [target setID:cid];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1039,7 +1050,9 @@ static RfxPluginManager *gRfxPM = nil;
     }
     [c setM_duration:[[it objectForKey:@"duration_ms"] intValue] / 1000];
     [c setM_tracknumber:[[it objectForKey:@"track_no"] intValue]];
+    gRfxPlayNow = YES;                                    // a title the user chose plays right away
     [[[m_kv m_glv] GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+    gRfxPlayNow = NO;
     [c release];
 }
 
@@ -1059,7 +1072,7 @@ static RfxPluginManager *gRfxPM = nil;
     [DEL UnlockDB];
     GLView *glv = [m_kv m_glv];
     if (folder != nil) [glv ShowOnlyFolder:folder withstartSong:NO channelviewwaspresent:YES];
-    if (queue && c != nil) [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c];
+    if (queue && c != nil) { gRfxPlayNow = YES; [[glv GetKBView] AddItemFromSearchList:0 withsection:0 withdirectClipObject:c]; gRfxPlayNow = NO; }
     [c release]; [folder release];
 }
 @end

@@ -4,6 +4,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+extern BOOL gRfxPlayNow;       // set while a title the user chose is put into the queue: it plays right away
+
 @class GLView, KioskView, KeyboardView;
 
 // MenuView -- the small native panels of the original app: type 0 "Newsflash" (hourly time announcement check box),
@@ -54,10 +56,11 @@
     UITableView *m_srtableview;       // +140
     NSMutableArray *m_srarray;        // +144
     NSMutableArray *m_srarrayother;   // +148
+    NSMutableArray *m_srarrayplugin;  // hits of source plugins (own section in the result list)
     NSLock *m_srlock;                 // +152
     UIView *m_srbgview;               // +156
-    BOOL m_srpicthreadstarted[2];     // +160
-    BOOL m_resortflag[2];             // +162
+    BOOL m_srpicthreadstarted[3];     // +160
+    BOOL m_resortflag[3];             // +162
     UILabel *m_collectionnamelabel;   // +164
     UILabel *m_founditemslabel;       // +168
     UIImageView *m_collectionicon;    // +172
@@ -134,6 +137,8 @@
 - (void)SetImagesOnSlider:(UISlider *)imagesOnSlider;
 - (void)SetResortFlag:(int)resortFlag withval:(BOOL)val;
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label;
+- (NSMutableArray *)SRArray:(int)section;
+- (int)LogicalSection:(NSInteger)tableSection;
 - (void)OpenConfigUrl:(NSURLRequest *)openConfigUrl;
 - (void)OpenHintUrl:(NSURLRequest *)openHintUrl;
 - (void)OpenFBWallUrl:(NSURLRequest *)openFBWallUrl;

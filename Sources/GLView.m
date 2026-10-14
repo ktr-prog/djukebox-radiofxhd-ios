@@ -1328,7 +1328,8 @@ static BOOL gRfxWaterOn = NO;
     if (found == -1) {
         [[self m_origarray] addObject:clip];
         NSString *st = [[m_searchview m_searchlabel] text];
-        if ([st length] == 0 || [self IsClipInSearchrange:clip withsearchtext:st]) {
+        // a plugin title that is loading is always shown, whatever the search field says
+        if ([st length] == 0 || [clip m_folderid] == -88 || [self IsClipInSearchrange:clip withsearchtext:st]) {
             int n = (int)[[self m_tilearray] count];
             int at;
             if ([self m_selectedfolderid] != -33) {

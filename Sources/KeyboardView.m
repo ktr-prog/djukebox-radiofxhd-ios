@@ -20,6 +20,8 @@
 
 static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the removed table cross-fade)
 
+BOOL gRfxPlayNow = NO;
+
 @implementation KeyboardView
 
 @synthesize m_draggingvolume, m_srarrayother, m_keyboardinittime, m_gotooverview, m_xfield, m_showwhat, m_searchlabel, m_keyboardshown;
@@ -36,6 +38,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         [m_srarray release];
         m_srarray = nil;
     }
+    if (m_srarrayplugin != nil) { [m_srarrayplugin release]; m_srarrayplugin = nil; }
     if (m_srarrayother != nil) {
         [m_srarrayother release];
         m_srarrayother = nil;
@@ -490,6 +493,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 
         m_srarray = [[NSMutableArray alloc] init];
         m_srarrayother = [[NSMutableArray alloc] init];
+        m_srarrayplugin = [[NSMutableArray alloc] init];
         m_srbgview = [[UIView alloc] initWithFrame:CGRectZero];
         [self addSubview:m_srbgview];
         [m_srbgview setBackgroundColor:darkgray];
@@ -635,7 +639,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 #pragma mark - search result table
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return [self getNumberOfRowsInSection:(int)section];
+    return [self getNumberOfRowsInSection:[self LogicalSection:section]];
 }
 
 - (void)SRTapped:(UITapGestureRecognizer *)g {
@@ -645,9 +649,9 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     NSIndexPath *ip = [m_srtableview indexPathForRowAtPoint:p];
     if (ip == nil) { [RfxPluginManager Toast:@"Tipp neben die Liste."]; return; }
     RfxCrumb("SRTapped indexpath");
-    int section = (int)[ip section];
+    int section = [self LogicalSection:[ip section]];
     int row = (int)[ip row];
-    NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
+    NSMutableArray *src = [self SRArray:section];
     int count = (src != nil) ? (int)[src count] : 0;
     int rows = 0, cols = 0;
     RfxCrumb("SRTapped matrix");
@@ -696,7 +700,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         if ([[m_pkiosk m_glv] m_selectedfolderid] != folderid) break;
         if ([[m_pkiosk m_glv] m_selectedipodid] != ipodid) break;
         [m_srlock lock];
-        NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
+        NSMutableArray *src = [self SRArray:section];
         int found = -1;
         for (int k = 0; k < (int)[src count]; k++) {
             ClipObject *o = [src objectAtIndex:k];
@@ -726,7 +730,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 // +1: rows of the result grid in reading order (top rows first), then (section 0) the rest of the folder
 - (NSMutableArray *)GetReSortedArray:(int)reSortedArray {
     NSMutableArray *out = [[NSMutableArray alloc] init];
-    NSMutableArray *src = (reSortedArray == 0) ? m_srarray : m_srarrayother;
+    NSMutableArray *src = [self SRArray:reSortedArray];
     [m_srlock lock];
     int count = (int)[src count];
     int rows = 0, cols = 0;
@@ -748,8 +752,8 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     CGSize sz = [DEL GetiPadSize];
-    int section = (int)[indexPath section];
-    NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
+    int section = [self LogicalSection:[indexPath section]];
+    NSMutableArray *src = [self SRArray:section];
     [m_srlock lock];
     int count = (int)[src count];
     [m_srlock unlock];
@@ -855,19 +859,74 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     return 60.0f;
 }
 
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    if (section != 1) return nil;
-    UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 100.0f, 4.0f)] autorelease];
+// the result list is divided into "Lokal" (shown folder), "Weitere Ordner" and one section per source plugin
+- (NSMutableArray *)SRArray:(int)section {
+    return (section == 0) ? m_srarray : ((section == 1) ? m_srarrayother : m_srarrayplugin);
+}
+
+- (int)LogicalSection:(NSInteger)tableSection {
+    int seen = -1;
+    for (int s = 0; s < 3; s++) {
+        BOOL shown = (s == 0) || ([[self SRArray:s] count] > 0);
+        if (shown) seen++;
+        if (seen == (int)tableSection) return s;
+    }
+    return 0;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 1 + ([m_srarrayother count] > 0 ? 1 : 0) + ([m_srarrayplugin count] > 0 ? 1 : 0);
+}
+
+- (NSString *)SRSourceName {
+    ClipObject *c = [m_srarrayplugin count] ? [m_srarrayplugin objectAtIndex:0] : nil;
+    NSData *j = [[c m_information] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *d = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
+    NSString *n = [d isKindOfClass:[NSDictionary class]] ? [d objectForKey:@"_source"] : nil;
+    return ([n isKindOfClass:[NSString class]] && [n length]) ? n : @"Quelle";
+}
+
+// small round badge: a note for local hits, the first letter of the source for plugin hits
+static UIImage *SRBadge(NSString *glyph, UIColor *color) {
+    CGSize sz = CGSizeMake(16.0f, 16.0f);
+    UIGraphicsBeginImageContextWithOptions(sz, NO, 0.0f);
+    [color setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, 16.0f, 16.0f)] fill];
+    NSDictionary *at = [NSDictionary dictionaryWithObjectsAndKeys:[UIFont boldSystemFontOfSize:10.0f], NSFontAttributeName, [UIColor whiteColor], NSForegroundColorAttributeName, nil];
+    CGSize ts = [glyph sizeWithAttributes:at];
+    [glyph drawAtPoint:CGPointMake((16.0f - ts.width) * 0.5f, (16.0f - ts.height) * 0.5f) withAttributes:at];
+    UIImage *im = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return im;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)tsection {
+    int section = [self LogicalSection:tsection];
+    NSString *name; NSString *glyph; UIColor *col;
+    if (section == 0) { name = @"Ergebnisse: lokal"; glyph = @"\u266A"; col = [UIColor colorWithWhite:0.45f alpha:1.0f]; }
+    else if (section == 1) { name = @"Ergebnisse: weitere lokale Ordner"; glyph = @"\u266A"; col = [UIColor colorWithWhite:0.35f alpha:1.0f]; }
+    else {
+        NSString *sn = [self SRSourceName];
+        name = [NSString stringWithFormat:@"Ergebnisse: %@", sn];
+        glyph = [[sn substringToIndex:1] uppercaseString];
+        col = [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f];
+    }
+    UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 24.0f)] autorelease];
     [v setBackgroundColor:[UIColor colorWithWhite:0.15f alpha:1.0f]];
+    UIImageView *iv = [[[UIImageView alloc] initWithImage:SRBadge(glyph, col)] autorelease];
+    [iv setFrame:CGRectMake(12.0f, 4.0f, 16.0f, 16.0f)];
+    [v addSubview:iv];
+    UILabel *l = [[[UILabel alloc] initWithFrame:CGRectMake(36.0f, 2.0f, [tableView frame].size.width - 48.0f, 20.0f)] autorelease];
+    [l setText:name];
+    [l setFont:[UIFont boldSystemFontOfSize:12.0f]];
+    [l setTextColor:[UIColor colorWithWhite:0.75f alpha:1.0f]];
+    [l setBackgroundColor:[UIColor clearColor]];
+    [v addSubview:l];
     return v;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return (section == 1) ? 4.0f : 0.0f;
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return ([[self m_srarrayother] count] > 0) ? 2 : 1;
+    return 24.0f;
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
@@ -981,16 +1040,16 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         [[RfxPluginManager shared] SearchText:text done:^(NSString *t, NSArray *clips) {
             if ([[self m_searchlabel] text] == nil || ![[[self m_searchlabel] text] isEqualToString:t]) return;
             [m_srlock lock];
-            for (int i = (int)[m_srarrayother count] - 1; i >= 0; i--)
-                if ([[m_srarrayother objectAtIndex:i] m_folderid] == -88) [m_srarrayother removeObjectAtIndex:i];
-            [m_srarrayother addObjectsFromArray:clips];
+            [m_srarrayplugin removeAllObjects];
+            [m_srarrayplugin addObjectsFromArray:clips];
             [m_srlock unlock];
-            [self SetResortFlag:1 withval:YES];
+            [self SetResortFlag:2 withval:YES];
             [m_srtableview reloadData];
         }];
     } else {
         [m_srlock lock];
         [m_srarrayother removeAllObjects];
+        [m_srarrayplugin removeAllObjects];
         [m_srlock unlock];
         [m_srtableview performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO];
         [dbop release];
@@ -1034,7 +1093,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
 }
 
 - (int)getNumberOfRowsInSection:(int)numberOfRowsInSection {
-    NSArray *a = (numberOfRowsInSection != 0) ? [self m_srarrayother] : m_srarray;
+    NSArray *a = [self SRArray:numberOfRowsInSection];
     int rows = 0, cols = 0;
     [self GetTableMatrix:(int)[a count] withitemsincolum:&rows withcolumcount:&cols];
     return rows;
@@ -1227,7 +1286,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
     RfxCrumb("AddItem begin");
     if (co == nil) {
         if (itemFromSearchList < 0) return;
-        NSMutableArray *src = (section == 0) ? m_srarray : m_srarrayother;
+        NSMutableArray *src = [self SRArray:section];
         if ((unsigned)itemFromSearchList >= [src count]) { [RfxPluginManager Toast:@"Eintrag nicht mehr vorhanden."]; return; }
         co = [src objectAtIndex:itemFromSearchList];
     }
@@ -1261,7 +1320,7 @@ static int gv_tablefadetag = 0;   // original data_0034f610 (only used by the re
         fr = [m_pkiosk MakeSmallFrame:fr];
         [[n m_imgv] setFrame:fr];
         RfxCrumb("AddItem AddClip");
-        [m_pkiosk AddClip:n atIndex:-1 fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
+        [m_pkiosk AddClip:n atIndex:(gRfxPlayNow ? 0 : -1) fromDragging:NO withsendqueue:YES withaddanyway:NO sendremotedelayed:NO];
         RfxCrumb("AddItem AddClip done");
         added = n;
         // no [n release] here: AddClip takes over the reference (it releases the clip itself and the queue array owns it);
