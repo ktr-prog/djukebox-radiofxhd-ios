@@ -471,13 +471,43 @@ static NSDictionary *RfxPluginPaths(void) {
     return d;
 }
 
-// buffer files of stream-only titles live here; the folder is emptied at every app start
+// Stream-only titles are kept next to the local files: in the directory of the library folder "Imported" (the folder is
+// created if it does not exist yet).  Nothing is emptied at start.
 static NSString *RfxStreamDir(void) {
-    // TEST: kept in Documents (visible in the Files app, not cleaned by iOS and not deleted at start) to inspect the files
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-    NSString *d = [docs stringByAppendingPathComponent:@"PluginStream"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
-    return d;
+    static NSString *cached = nil;
+    if (cached != nil) return cached;
+    __block NSString *dir = nil;
+    void (^work)(void) = ^{
+        KioskView *kv = (KioskView *)gRfxToastHost;
+        ServerEntry *sve = [kv isKindOfClass:[KioskView class]] ? [kv m_sve] : nil;
+        if (sve == nil) return;
+        int sid = [sve serverid];
+        [DEL LockDB:NO];
+        DBOperations *db = [[DBOperations alloc] init];
+        long long fid = [db FolderIDForName:@"Imported" serverid:sid];
+        FolderObject *folder = [[[FolderObject alloc] init] autorelease];
+        [folder setFoldername:@"Imported"];
+        [folder setServerid:sid];
+        if (fid < 0) {
+            long long next = [db MaxFolderID];
+            if (next < 199) next = 199;
+            fid = next + 1;
+            [folder setFolderid:fid];
+            [db InsertFolder:folder];
+        } else {
+            [folder setFolderid:fid];
+        }
+        [db release];
+        [DEL UnlockDB];
+        dir = [[NSString stringWithFormat:@"%@%@/", [DEL CreateServerDir:sve withfolderobject:folder], [DEL Buildfoldername:folder]] retain];
+    };
+    if ([NSThread isMainThread]) work(); else dispatch_sync(dispatch_get_main_queue(), work);
+    if (dir == nil) {            // fallback: temporary folder
+        dir = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"] retain];
+    }
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    cached = dir;
+    return cached;
 }
 
 static NSString *RfxSafeName(NSString *s) {
@@ -920,7 +950,10 @@ static RfxPluginManager *gRfxPM = nil;
         // a plugin can mark a title as "stream only" (resolve result "cache": false): it is only buffered in the
         // temporary folder for playing and is never put into the library
         id cacheFlag = [r objectForKey:@"cache"];
-        BOOL stream = ([cacheFlag isKindOfClass:[NSNumber class]] && ![cacheFlag boolValue]);
+        // DEVIATION: every title (also previews) is treated like a local file: it is imported into the library (radio.db) and
+        // stays in the carousel.  The plugin's "cache: false" is ignored on purpose.
+        BOOL stream = NO;
+        (void)cacheFlag;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
             NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
