@@ -32,6 +32,12 @@ static BOOL gv_texfallback  = NO;
 static const GLfloat kTexCoordMain[8]    = { 0, 1,  1, 1,  0, 0,  1, 0 };
 static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 
+// Water level of the cover that belongs to a plugin title that is loading (see SetWaterForClipID:level:)
+static long long gRfxWaterID = 0;
+static float gRfxWaterTarget = 0.0f;
+static float gRfxWaterShown = 0.0f;
+static BOOL gRfxWaterOn = NO;
+
 @implementation GLView
 
 @synthesize context, viewFramebuffer, viewRenderbuffer;
@@ -734,6 +740,43 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
             }
             glColorPointer(4, GL_FLOAT, 0, m_colors);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            // Water on the cover of a title that is loading: it fills up from the bottom like a glass (the level follows the
+            // real progress smoothly), the surface ripples.
+            if (gRfxWaterOn && [clipForId ID] == gRfxWaterID && [tile percent] > 99) {
+                gRfxWaterShown += (gRfxWaterTarget - gRfxWaterShown) * 0.12f;
+                float lvl = gRfxWaterShown;
+                if (lvl < 0.0f) lvl = 0.0f;
+                if (lvl > 1.0f) lvl = 1.0f;
+                enum { WN = 28 };
+                GLfloat wv[(WN + 1) * 2 * 3];
+                GLfloat wc[(WN + 1) * 2 * 4];
+                float topBase = yBot + lvl * (yTop - yBot);
+                float amp = 0.045f * hh * ((lvl > 0.01f && lvl < 0.99f) ? 1.0f : 0.0f);
+                double ph = CACurrentMediaTime() * 3.4;
+                float wa = (float)alpha * 0.62f;
+                for (int wi = 0; wi <= WN; wi++) {
+                    float fr = (float)wi / (float)WN;
+                    float wx = x0 + (x1 - x0) * fr;
+                    float wave = amp * (float)(sin(ph + fr * 9.0) + 0.5 * sin(ph * 1.7 - fr * 14.0));
+                    float wy = topBase + wave;
+                    if (wy > yTop) wy = yTop;
+                    if (wy < yBot) wy = yBot;
+                    wv[(wi * 2) * 3 + 0] = wx; wv[(wi * 2) * 3 + 1] = wy;   wv[(wi * 2) * 3 + 2] = Zf;
+                    wv[(wi * 2 + 1) * 3 + 0] = wx; wv[(wi * 2 + 1) * 3 + 1] = yBot; wv[(wi * 2 + 1) * 3 + 2] = Zf;
+                    // surface: light blue, ground: deeper blue
+                    wc[(wi * 2) * 4 + 0] = 0.55f * shade; wc[(wi * 2) * 4 + 1] = 0.82f * shade; wc[(wi * 2) * 4 + 2] = 1.0f * shade; wc[(wi * 2) * 4 + 3] = wa * 0.85f;
+                    wc[(wi * 2 + 1) * 4 + 0] = 0.05f * shade; wc[(wi * 2 + 1) * 4 + 1] = 0.40f * shade; wc[(wi * 2 + 1) * 4 + 2] = 0.85f * shade; wc[(wi * 2 + 1) * 4 + 3] = wa;
+                }
+                glDisable(GL_TEXTURE_2D);
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+                glVertexPointer(3, GL_FLOAT, 0, wv);
+                glColorPointer(4, GL_FLOAT, 0, wc);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, (WN + 1) * 2);
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+                glEnable(GL_TEXTURE_2D);
+                glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
+                again = YES;                     // keep drawing frames while the water moves
+            }
         }
         // the colour array stays enabled for fully loaded covers
         if ([tile percent] <= 99) glDisableClientState(GL_COLOR_ARRAY);
@@ -1339,6 +1382,56 @@ static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
         if ([self m_specialtexture]) { [[self m_specialtexture] release]; [self setM_specialtexture:nil]; }
     }
     [clip release];
+    [m_arraylock unlock];
+}
+
+#pragma mark - plugin titles that are loading (water on the cover)
+
+- (void)SetWaterForClipID:(long long)cid level:(float)level {
+    if (cid != gRfxWaterID || !gRfxWaterOn) gRfxWaterShown = 0.0f;
+    gRfxWaterID = cid;
+    gRfxWaterTarget = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+    gRfxWaterOn = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drawView) object:nil];
+        [self drawView];
+    });
+}
+
+- (void)ClearWater {
+    gRfxWaterOn = NO;
+    gRfxWaterID = 0;
+    gRfxWaterShown = 0.0f;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drawView) object:nil];
+        [self drawView];
+    });
+}
+
+// takes the cover of a title out of the coverflow again (the title could not be loaded)
+- (void)RemovePluginPlaceholder:(long long)cid {
+    [self GetArrayLock:NO];
+    NSArray *lists = [NSArray arrayWithObjects:[self m_tilearray], [self m_origarray], nil];
+    for (NSMutableArray *arr in lists) {
+        for (int i = (int)[arr count] - 1; i >= 0; i--) {
+            ClipObject *c = [arr objectAtIndex:i];
+            if ([c ID] == cid && [c m_folderid] == -88 && [[c m_filepath] length] == 0) [arr removeObjectAtIndex:i];
+        }
+    }
+    int n = (int)[[self m_tilearray] count];
+    if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
+    [m_arraylock unlock];
+    [self ReInitThread];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self drawView]; });
+}
+
+// the file of a title that was loaded: from now on the cover in the coverflow is a normal playable cover
+- (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid {
+    [self GetArrayLock:NO];
+    NSArray *lists = [NSArray arrayWithObjects:[self m_tilearray], [self m_origarray], nil];
+    for (NSMutableArray *arr in lists)
+        for (ClipObject *c in arr)
+            if ([c ID] == cid && [c m_folderid] == -88) [c setM_filepath:path];
     [m_arraylock unlock];
 }
 

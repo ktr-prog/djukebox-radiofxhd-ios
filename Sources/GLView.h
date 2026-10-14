@@ -365,6 +365,11 @@
 - (CGRect)GetRegisterRect:(int)registerRect;
 - (BOOL)Getprescrollerthreaddone;
 - (void)AddPicture:(id)picture;
+// Plugin titles that are being loaded: the cover shows water that fills up from the bottom (level 0..1)
+- (void)SetWaterForClipID:(long long)cid level:(float)level;
+- (void)ClearWater;
+- (void)RemovePluginPlaceholder:(long long)cid;
+- (void)SetFilepath:(NSString *)path forPluginClipID:(long long)cid;
 - (void)LabelAni:(id)labelAni;
 - (void)ToggleKBAndRegister:(id)toggleKBAndRegister;
 - (void)OpenFBWallUrl;

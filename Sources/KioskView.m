@@ -77,6 +77,12 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
     return v;
 }
 
+static long long RfxItemID(NSString *plugin, NSString *ref) {
+    NSString *hex = nil;
+    unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", plugin, ref], &hex);
+    return -(long long)(h64 & 0x3fffffffffULL) - 100000;
+}
+
 // A source plugin written in JavaScript, running inside the app (JavaScriptCore).  The script defines
 // handle(method, params) -> Promise and speaks the ricercar plugin protocol 1 method names.  It gets fetchText(url, opts),
 // hostLog(text), hostOpen(url) and hostGet/hostSet(key[, value]) (small per-plugin storage).
@@ -102,7 +108,24 @@ static unsigned long long RfxHash64(NSString *s, NSString **hex) {
     __block NSString *firstError = nil;
     RfxJSPlugin *me = self;
     [m_ctx setExceptionHandler:^(JSContext *c, JSValue *ex) { if (firstError == nil) firstError = [[ex toString] retain]; }];
-    m_ctx[@"__native_log"] = ^(NSString *t) { NSLog(@"[plugin %@] %@", pid, t); };
+    m_ctx[@"__native_log"] = ^(NSString *t) {
+        NSLog(@"[plugin %@] %@", pid, t);
+        // also into  Dateien > Radio.fx > Plugins > <plugin>-log.txt  (the on-screen message is too short for long errors)
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+        NSString *lp = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:pid] stringByAppendingString:@"-log.txt"];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSDictionary *at = [fm attributesOfItemAtPath:lp error:nil];
+        if (at != nil && [[at objectForKey:NSFileSize] unsignedLongLongValue] > 200000) [fm removeItemAtPath:lp error:nil];
+        if (![fm fileExistsAtPath:lp]) [fm createFileAtPath:lp contents:nil attributes:nil];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:lp];
+        if (fh != nil) {
+            NSDateFormatter *df = [[[NSDateFormatter alloc] init] autorelease];
+            [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+            [fh seekToEndOfFile];
+            [fh writeData:[[NSString stringWithFormat:@"%@  %@\n", [df stringFromDate:[NSDate date]], t] dataUsingEncoding:NSUTF8StringEncoding]];
+            [fh closeFile];
+        }
+    };
     m_ctx[@"__native_open"] = ^(NSString *u) {
         NSURL *url = [NSURL URLWithString:u];
         if (url != nil) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
@@ -588,11 +611,15 @@ static RfxPluginManager *gRfxPM = nil;
 
 - (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
 
-// never configured: only the public archive plugin is on; everything else (Qobuz needs your keys) you switch on yourself
+// never configured: nothing starts by itself; plugins (Qobuz needs your keys) you switch on yourself.
+// Names of plugins that no longer exist (the old "archive" plugin) are dropped.
 - (NSArray *)AutostartList {
     NSArray *a = [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginAutostart"];
-    if (a != nil) return a;
-    return [NSArray arrayWithObject:@"archive"];
+    if (a == nil) return [NSArray array];
+    NSDictionary *paths = RfxPluginPaths();
+    NSMutableArray *ok = [NSMutableArray array];
+    for (NSString *n in a) if ([paths objectForKey:n] != nil) [ok addObject:n];
+    return ok;
 }
 - (BOOL)IsAutostart:(NSString *)name { return [[self AutostartList] containsObject:name]; }
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
@@ -608,6 +635,10 @@ static RfxPluginManager *gRfxPM = nil;
 }
 
 - (void)StartAutoload {
+    {   // the Archive plugin was removed: delete its copy from Documents/Plugins once
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+        [[NSFileManager defaultManager] removeItemAtPath:[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:@"archive.js"] error:nil];
+    }
     [[NSFileManager defaultManager] removeItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"PluginStream"] error:nil];
     for (NSString *n in [self AutostartList]) [self Load:n done:nil];
 }
@@ -671,7 +702,7 @@ static RfxPluginManager *gRfxPM = nil;
         [h call:@"search" params:p done:^(id r, NSString *e) {
             if (e == nil && [r isKindOfClass:[NSDictionary class]]) {
                 for (NSDictionary *g in [r objectForKey:@"groups"]) {
-                    if ([[g objectForKey:@"kind"] isEqualToString:@"artist"]) continue;
+                    if ([[g objectForKey:@"kind"] isEqualToString:@"artist"] || [[g objectForKey:@"kind"] isEqualToString:@"playlist"]) continue;
                     for (NSDictionary *it in [g objectForKey:@"items"]) {
                         NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:it];
                         [m setObject:n forKey:@"_plugin"];
@@ -755,13 +786,47 @@ static RfxPluginManager *gRfxPM = nil;
     NSDictionary *it = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
     RfxPluginHost *h = [m_hosts objectForKey:[it objectForKey:@"_plugin"]];
     if (it == nil || h == nil) { RfxToast(@"Plugin nicht geladen."); return; }
-    [self ImportItem:it host:h queueLast:YES];
+    NSMutableDictionary *mit = [NSMutableDictionary dictionaryWithDictionary:it];
+    if ([[co m_picturepath] length]) [mit setObject:[co m_picturepath] forKey:@"_pic"];
+    [self ImportItem:mit host:h queueLast:YES];
+}
+
+// the chosen title goes into the carousel first (as a stream-only tile without file); a water level on its cover shows the progress
+- (void)AddPlaceholderForItem:(NSDictionary *)it plugin:(NSString *)plugin {
+    GLView *glv = [m_kv m_glv];
+    if (glv == nil) return;
+    NSString *ref = [it objectForKey:@"ref"];
+    if (ref == nil) return;
+    long long cid = RfxItemID(plugin, ref);
+    NSString *pic = [[it objectForKey:@"_pic"] isKindOfClass:[NSString class]] ? [it objectForKey:@"_pic"] : nil;
+    ClipObject *pc = [[ClipObject alloc] init];
+    [pc setID:cid];
+    [pc setM_folderid:-88];
+    [pc setM_filepath:nil];
+    [pc setM_serverid:[[m_kv m_sve] serverid]];
+    [pc setM_title:([it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"")];
+    NSString *artist = [[it objectForKey:@"artist"] isKindOfClass:[NSString class]] ? [it objectForKey:@"artist"] : @"";
+    [pc setM_interpret:artist];
+    [pc setM_albumname:([[it objectForKey:@"album"] isKindOfClass:[NSString class]] ? [it objectForKey:@"album"] : @"")];
+    if (pic != nil) [pc setM_picturepath:pic];
+    [pc setM_duration:[[it objectForKey:@"duration_ms"] intValue] / 1000];
+    NSData *jr = [NSJSONSerialization dataWithJSONObject:[NSDictionary dictionaryWithObjectsAndKeys:plugin, @"_plugin", ref, @"ref", nil] options:0 error:nil];
+    if (jr != nil) [pc setM_information:[[[NSString alloc] initWithData:jr encoding:NSUTF8StringEncoding] autorelease]];
+    [glv SetWaterForClipID:cid level:0.04f];
+    [glv AddPicture:pc];                                  // takes over the reference
+    ClipObject *target = [[ClipObject alloc] init];
+    [target setID:cid];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [glv SpinAutomaticToClip:target orIndex:-1];
+        [target release];
+    });
 }
 
 - (void)ImportItem:(NSDictionary *)it host:(RfxPluginHost *)h queueLast:(BOOL)queueLast {
     NSString *kind = [it objectForKey:@"kind"];
     NSString *plugin = [it objectForKey:@"_plugin"] ? [it objectForKey:@"_plugin"] : [h pluginId];
     if ([kind isEqualToString:@"track"] || [kind length] == 0) {
+        [self AddPlaceholderForItem:it plugin:plugin];
         [m_queue addObject:[NSDictionary dictionaryWithObjectsAndKeys:it, @"item", h, @"host", plugin, @"plugin", nil]];
         m_total++; m_queueLast = queueLast && !m_busy && [m_queue count] == 1;
         [self Pump];
@@ -801,10 +866,18 @@ static RfxPluginManager *gRfxPM = nil;
     NSDictionary *it = [job objectForKey:@"item"];
     RfxPluginHost *h = [job objectForKey:@"host"];
     RfxProgress([NSString stringWithFormat:@"%d/%d  %@", m_doneCount + 1, m_total, [it objectForKey:@"title"]], (float)m_doneCount / (float)(m_total > 0 ? m_total : 1));
+    GLView *wglv = [m_kv m_glv];
+    long long wid = RfxItemID([job objectForKey:@"plugin"], [it objectForKey:@"ref"]);
+    [wglv SetWaterForClipID:wid level:0.06f];
     NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", @"play", @"purpose", nil];
     [h call:@"track.resolve" params:p done:^(id r, NSString *e) {
         NSURL *url = (e == nil && [r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] isKindOfClass:[NSString class]]) ? [NSURL URLWithString:[r objectForKey:@"url"]] : nil;
-        if (url == nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], (e ? e : @"keine Adresse")]); [self JobDone]; return; }
+        if (url == nil) {
+            RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], (e ? e : @"keine Adresse")]);
+            [wglv ClearWater]; [wglv RemovePluginPlaceholder:wid];
+            [self JobDone]; return;
+        }
+        [wglv SetWaterForClipID:wid level:0.15f];
         int dc = m_doneCount, tot = m_total;
         // a plugin can mark a title as "stream only" (resolve result "cache": false): it is only buffered in the
         // temporary folder for playing and is never put into the library
@@ -844,13 +917,21 @@ static RfxPluginManager *gRfxPM = nil;
                     long long got = [task countOfBytesReceived], all = [task countOfBytesExpectedToReceive];
                     float tf = (all > 0) ? (float)((double)got / (double)all) : 0.0f;
                     RfxProgress([NSString stringWithFormat:@"%d/%d  %@  %.1f MB", dc + 1, tot, ptitle, got / 1048576.0], ((float)dc + tf) / (float)(tot > 0 ? tot : 1));
+                    if (all <= 0) tf = 1.0f - (float)exp(-(double)got / 1048576.0 / 3.0);     // size unknown: fills up slowly
+                    [wglv SetWaterForClipID:wid level:0.15f + 0.82f * tf];
                 }
                 dispatch_release(sem);
             }
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (msg != nil) { RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], msg]); [msg release]; }
-                else if (stream) [self QueueStreamed:it file:file cover:cover];
-                else m_anyImport = YES;
+                if (msg != nil) {
+                    RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], msg]); [msg release];
+                    [wglv ClearWater]; [wglv RemovePluginPlaceholder:wid];
+                } else {
+                    [wglv SetWaterForClipID:wid level:1.0f];
+                    if (stream) { [wglv SetFilepath:file forPluginClipID:wid]; [self QueueStreamed:it file:file cover:cover]; }
+                    else { m_anyImport = YES; [wglv RemovePluginPlaceholder:wid]; }
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [wglv ClearWater]; });
+                }
                 [self JobDone];
             });
             [pool release];
@@ -1862,69 +1943,9 @@ static RfxPluginManager *gRfxPM = nil;
 
 #pragma mark - loading screen
 
-- (void)CheckLoadingscreen {
-    DBOperations *dbop = [[DBOperations alloc] init];
-    [DEL LockDB:YES];
-    int count = [dbop GetCompleteSongCount];
-    [DEL UnlockDB];
-    [dbop release];
-    // DEVIATION: the original showed this "fill your library at my.djukebox.com" screen below 10 songs (the
-    // cloud would fill it up).  Offline there is no cloud, so it only appears for a completely empty library.
-    if (count < 1) {
-        if (m_loadingscreen != nil) return;
-        UIImage *img = [UIImage imageNamed:@"loadingscreen.png"];
-        CGRect fr = [self frame];
-        BOOL small = fr.size.width < 1024.0f;
-        float imgscale = small ? 0.45f : 1.0f;
-        float yoff = small ? 10.0f : 40.0f;
-        CGSize isz = [img size];
-        m_loadingscreen = [[UIImageView alloc] initWithFrame:CGRectMake(
-            (fr.size.width - isz.width * imgscale) * 0.5f,
-            ((fr.size.height - isz.height * imgscale) * 0.5f) + yoff,
-            isz.width * imgscale, isz.height * imgscale)];
-        [m_loadingscreen setImage:img];
-        KeyboardView *kb = [m_glv GetKBView];
-        [self insertSubview:m_loadingscreen belowSubview:kb];
-        [m_loadingscreen release];
-        m_loadinglabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        float lw = (float)(int)(small ? fr.size.width * 0.97 : fr.size.width * 0.75);
-        float lh = small ? 55.0f : 90.0f;
-        float loff = small ? 5.0f : 35.0f;
-        [m_loadinglabel setFrame:CGRectMake(([self frame].size.width - lw) * 0.5f,
-                                            ([m_loadingscreen frame].origin.y - lh) - loff, lw, lh)];
-        [m_loadinglabel setFont:[UIFont systemFontOfSize:small ? 13.0f : 19.0f]];
-        [m_loadinglabel setTextAlignment:NSTextAlignmentCenter];
-        [m_loadinglabel setBackgroundColor:[UIColor clearColor]];
-        [m_loadinglabel setTextColor:[UIColor colorWithWhite:0.753f alpha:1.0f]];
-        [m_loadinglabel setNumberOfLines:small ? 3 : 4];
-        [m_loadinglabel setText:[NSString stringWithFormat:@"Fast geschafft: Wählen Sie nun noch unter my.djukebox.com eine\nMusikquelle aus und die djukebox® füllt sich nach und nach mit Musik.%@\nBitte nicht ausschalten.", small ? @"" : @"\n"]];
-        [self insertSubview:m_loadinglabel belowSubview:kb];
-        [m_loadinglabel release];
-        m_rotateclip = NO;
-        m_cliptorotate = nil;
-        [self setM_rotateclip:NO];
-        [self setM_shrinkdevider:NO];
-        [self setM_presongInitTime:-1.0];
-        [self setM_crossfadeInitTime:-1.0];
-        m_cliptorotate = nil;
-        [self StopPlayers];
-        [m_glv EmptyRondell];
-        for (ClipObject *c in [self m_clips]) {
-            if ([c m_imgv] != nil) { [[c m_imgv] removeFromSuperview]; [c setM_imgv:nil]; }
-            if ([c m_imgvtext] != nil) { [[c m_imgvtext] removeFromSuperview]; [c setM_imgvtext:nil]; }
-            if ([c m_swapimgv] != nil) { [[c m_swapimgv] removeFromSuperview]; [c setM_swapimgv:nil]; }
-        }
-        [[self m_clips] removeAllObjects];
-    } else {
-        if (m_loadingscreen == nil) return;
-        [m_loadingscreen removeFromSuperview];
-        m_loadingscreen = nil;
-        [m_loadinglabel removeFromSuperview];
-        m_loadinglabel = nil;
-        [m_glv ReShowFolder];
-        [self StartFirstFolderSong:[NSNumber numberWithInt:1]];
-    }
-}
+// DEVIATION: the original showed a "Fast geschafft: ... my.djukebox.com" screen for an empty library.  It is removed
+// completely; an empty library just shows an empty carousel.
+- (void)CheckLoadingscreen { }
 
 #pragma mark - folders
 
