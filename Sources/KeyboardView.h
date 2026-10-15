@@ -56,6 +56,7 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
     UITableView *m_srtableview;       // +140
     NSMutableArray *m_srarray;        // +144
     NSMutableArray *m_srarrayother;   // +148
+    NSMutableDictionary *m_srplatitems;   // plugin id -> hits of that platform (own section each, also when empty)
     NSMutableArray *m_srarrayplugin;  // hits of source plugins (own section in the result list)
     float m_srprog;                   // search progress shown as fill of the plugin section header (< 0: none)
     NSString *m_srprogname;           // source name / id shown in that header while it loads
@@ -66,8 +67,8 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
     NSMutableDictionary *m_srshown;   // plugin hit id -> modification time of the thumbnail last shown
     NSLock *m_srlock;                 // +152
     UIView *m_srbgview;               // +156
-    BOOL m_srpicthreadstarted[3];     // +160
-    BOOL m_resortflag[3];             // +162
+    BOOL m_srpicthreadstarted[16];     // +160
+    BOOL m_resortflag[16];             // +162
     UILabel *m_collectionnamelabel;   // +164
     UILabel *m_founditemslabel;       // +168
     UIImageView *m_collectionicon;    // +172

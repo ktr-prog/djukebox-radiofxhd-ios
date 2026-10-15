@@ -39,6 +39,7 @@ BOOL gRfxPlayNow = NO;
         m_srarray = nil;
     }
     if (m_srarrayplugin != nil) { [m_srarrayplugin release]; m_srarrayplugin = nil; }
+    [m_srplatitems release]; m_srplatitems = nil;
     [m_srprogname release]; m_srprogname = nil;
     [m_srprogid release]; m_srprogid = nil;
     [m_srshown release]; m_srshown = nil;
@@ -141,6 +142,7 @@ BOOL gRfxPlayNow = NO;
     [m_srarray removeAllObjects];
     [m_srarrayother removeAllObjects];
     [m_srarrayplugin removeAllObjects];
+    [self SRRebuildPlat];
     [m_srlock unlock];
     [m_srtableview reloadData];
     [[RfxPluginManager shared] SearchText:@"" done:nil];
@@ -290,6 +292,13 @@ BOOL gRfxPlayNow = NO;
 
 // Progress of the plugin search: the header of the source's section ("Qobuz") is the bar itself - a fill grows behind
 // the header text.  fraction < 0 ends it.  Nothing else in the window shows progress.
+static void SRCollectTag(UIView *root, int tag, NSMutableArray *out) {
+    for (UIView *v in [root subviews]) {
+        if ([v tag] == tag) [out addObject:v];
+        SRCollectTag(v, tag, out);
+    }
+}
+
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label {
     [self SetSearchProgress:fraction label:label pluginId:nil];
 }
@@ -305,12 +314,14 @@ BOOL gRfxPlayNow = NO;
     if (label != nil) { [m_srprogname release]; m_srprogname = [[[label componentsSeparatedByString:@" ("] objectAtIndex:0] copy]; }
     if (pid != nil) { [m_srprogid release]; m_srprogid = [pid copy]; }
     m_srprog = fraction;
-    if (!wasVisible && [m_srarrayplugin count] == 0) {      // the section appears with its header
+    if (!wasVisible) {      // the platform headers get their progress fill (and lose "Keine Ergebnisse")
         [m_srtableview reloadData];
         return;
     }
-    UIView *fill = [m_srtableview viewWithTag:7791];
-    if (fill != nil && [fill superview] != nil) {
+    NSMutableArray *fills = [NSMutableArray array];
+    SRCollectTag(m_srtableview, 7791, fills);
+    for (UIView *fill in fills) {
+        if ([fill superview] == nil) continue;
         float w = [[fill superview] bounds].size.width * fraction;
         [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:^{
             [fill setFrame:CGRectMake(0, 0, w, [[fill superview] bounds].size.height)];
@@ -329,7 +340,7 @@ BOOL gRfxPlayNow = NO;
         for (UITableViewCell *cell in [m_srtableview visibleCells]) {
             for (int c = 0; c < 6; c++) {
                 SImage *img = (SImage *)[cell viewWithTag:c + 100];
-                if (img == nil || [img m_section] != 2 || [img m_id] == -1) continue;
+                if (img == nil || [img m_section] < 2 || [img m_id] == -1) continue;
                 ClipObject *co = nil;
                 [m_srlock lock];
                 for (ClipObject *o in m_srarrayplugin) if ([o ID] == [img m_id]) { co = [[o retain] autorelease]; break; }
@@ -513,7 +524,8 @@ BOOL gRfxPlayNow = NO;
         m_cursortimer = nil;
         m_draggingvolume = NO;
         m_srpicthreadstarted[0] = m_srpicthreadstarted[1] = NO;
-        m_resortflag[0] = m_resortflag[1] = YES;
+        for (int rf = 0; rf < 16; rf++) m_resortflag[rf] = YES;
+        for (int pt = 0; pt < 16; pt++) m_srpicthreadstarted[pt] = NO;
         m_gotooverview = NO;
         UIColor *darkgray = [UIColor colorWithWhite:0.251f alpha:1.0f];
         m_srlock = [[NSLock alloc] init];
@@ -586,6 +598,7 @@ BOOL gRfxPlayNow = NO;
         m_srarray = [[NSMutableArray alloc] init];
         m_srarrayother = [[NSMutableArray alloc] init];
         m_srarrayplugin = [[NSMutableArray alloc] init];
+        m_srplatitems = [[NSMutableDictionary alloc] init];
         m_srprog = -1.0f;
         m_srbgview = [[UIView alloc] initWithFrame:CGRectZero];
         [self addSubview:m_srbgview];
@@ -746,6 +759,7 @@ BOOL gRfxPlayNow = NO;
     int row = (int)[ip row];
     NSMutableArray *src = [self SRArray:section];
     int count = (src != nil) ? (int)[src count] : 0;
+    if (count == 0) return;
     int rows = 0, cols = 0;
     RfxCrumb("SRTapped matrix");
     [self GetTableMatrix:count withitemsincolum:&rows withcolumcount:&cols];
@@ -850,6 +864,18 @@ BOOL gRfxPlayNow = NO;
     [m_srlock lock];
     int count = (int)[src count];
     [m_srlock unlock];
+    if (section >= 2 && count == 0) {
+        UITableViewCell *ec = [tableView dequeueReusableCellWithIdentifier:@"cellid_empty"];
+        if (ec == nil) {
+            ec = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cellid_empty"] autorelease];
+            [ec setBackgroundColor:[UIColor clearColor]];
+            [ec setSelectionStyle:UITableViewCellSelectionStyleNone];
+            [[ec textLabel] setTextColor:[UIColor colorWithWhite:0.55f alpha:1.0f]];
+            [[ec textLabel] setFont:[UIFont systemFontOfSize:15.0f]];
+        }
+        [[ec textLabel] setText:@"Keine Ergebnisse"];
+        return ec;
+    }
     int rows = 0, cols = 0;
     [self GetTableMatrix:count withitemsincolum:&rows withcolumcount:&cols];
     CGRect tf = [tableView frame];
@@ -916,7 +942,7 @@ BOOL gRfxPlayNow = NO;
                 title = [NSString stringWithString:([co m_title] ? [co m_title] : @"")];
                 interpret = [NSString stringWithString:([co m_interpret] ? [co m_interpret] : @"")];
                 image = [m_pkiosk GetSmallImage:co];
-                if (section == 2 && [co m_picturepath] != nil)
+                if (section >= 2 && [co m_picturepath] != nil)
                     modk = [[[NSFileManager defaultManager] attributesOfItemAtPath:[DEL BuildSmallPicpath:[co m_picturepath]] error:nil] fileModificationDate];
                 if (image == nil) {
                     image = [UIImage imageNamed:@"cover-note-40x40.png"];
@@ -932,7 +958,7 @@ BOOL gRfxPlayNow = NO;
         if (img != nil) {
             // a cover that arrives later (plugin hits) blends in instead of popping in
             BOOL blend = NO;
-            if (section == 2 && cid64 != -1 && modk != nil && image != nil) {
+            if (section >= 2 && cid64 != -1 && modk != nil && image != nil) {
                 if (m_srshown == nil) m_srshown = [[NSMutableDictionary alloc] init];
                 NSNumber *key = [NSNumber numberWithLongLong:cid64];
                 NSDate *prev = [m_srshown objectForKey:key];
@@ -970,22 +996,64 @@ BOOL gRfxPlayNow = NO;
 }
 
 // the result list is divided into "Lokal" (shown folder), "Weitere Ordner" and one section per source plugin
-- (NSMutableArray *)SRArray:(int)section {
-    return (section == 0) ? m_srarray : ((section == 1) ? m_srarrayother : m_srarrayplugin);
+// Result list sections: 0 local, 1 other folders, 2.. one per search platform (always there while a text is searched, "Keine Ergebnisse" when empty)
+static NSString *SRClipPlugin(ClipObject *c) {
+    NSData *j = [[c m_information] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *d = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
+    NSString *n = [d isKindOfClass:[NSDictionary class]] ? [d objectForKey:@"_plugin"] : nil;
+    return [n isKindOfClass:[NSString class]] ? n : @"";
 }
 
-- (int)LogicalSection:(NSInteger)tableSection {
-    // only sections that really have results are shown (an empty list still has its one section 0)
-    int seen = -1;
-    for (int s = 0; s < 3; s++) {
-        if ([[self SRArray:s] count] > 0 || (s == 2 && m_srprog >= 0.0f)) seen++;
-        if (seen == (int)tableSection) return s;
+- (void)SRRebuildPlat {      // call with m_srlock held (or when nothing else touches the arrays)
+    if (m_srplatitems == nil) m_srplatitems = [[NSMutableDictionary alloc] init];
+    [m_srplatitems removeAllObjects];
+    for (ClipObject *c in m_srarrayplugin) {
+        NSString *pid = SRClipPlugin(c);
+        NSMutableArray *a = [m_srplatitems objectForKey:pid];
+        if (a == nil) { a = [NSMutableArray array]; [m_srplatitems setObject:a forKey:pid]; }
+        [a addObject:c];
     }
+}
+
+- (NSArray *)SRPlatforms {
+    NSMutableArray *p = [NSMutableArray arrayWithArray:[[RfxPluginManager shared] SearchPlatforms]];
+    // a platform that delivered hits but is not loaded any more still keeps its section
+    for (NSString *pid in [m_srplatitems allKeys]) {
+        BOOL have = NO;
+        for (NSDictionary *d in p) if ([[d objectForKey:@"id"] isEqualToString:pid]) { have = YES; break; }
+        if (!have && [pid length]) [p addObject:[NSDictionary dictionaryWithObjectsAndKeys:pid, @"id", pid, @"name", @"", @"note", nil]];
+    }
+    return p;
+}
+
+- (BOOL)SRPlatformsShown {
+    NSString *t = [[self m_searchlabel] text];
+    return ([t length] > 1 || [m_srarrayplugin count] > 0 || m_srprog >= 0.0f);
+}
+
+- (NSMutableArray *)SRArray:(int)section {
+    if (section == 0) return m_srarray;
+    if (section == 1) return m_srarrayother;
+    NSArray *p = [self SRPlatforms];
+    int i = section - 2;
+    if (i < 0 || i >= (int)[p count]) return m_srarrayplugin;
+    NSMutableArray *a = [m_srplatitems objectForKey:[[p objectAtIndex:i] objectForKey:@"id"]];
+    return (a != nil) ? a : [NSMutableArray array];
+}
+
+- (int)SRPlatformCount { return [self SRPlatformsShown] ? (int)[[self SRPlatforms] count] : 0; }
+
+- (int)LogicalSection:(NSInteger)tableSection {
+    int seen = -1;
+    if ([m_srarray count] > 0) { seen++; if (seen == (int)tableSection) return 0; }
+    if ([m_srarrayother count] > 0) { seen++; if (seen == (int)tableSection) return 1; }
+    int pc = [self SRPlatformCount];
+    for (int i = 0; i < pc; i++) { seen++; if (seen == (int)tableSection) return 2 + i; }
     return 0;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    int n = ([m_srarray count] > 0 ? 1 : 0) + ([m_srarrayother count] > 0 ? 1 : 0) + (([m_srarrayplugin count] > 0 || m_srprog >= 0.0f) ? 1 : 0);
+    int n = ([m_srarray count] > 0 ? 1 : 0) + ([m_srarrayother count] > 0 ? 1 : 0) + [self SRPlatformCount];
     return n > 0 ? n : 1;
 }
 
@@ -1031,26 +1099,33 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)tsection {
     int section = [self LogicalSection:tsection];
-    if ([[self SRArray:section] count] == 0 && !(section == 2 && m_srprog >= 0.0f)) return nil;
-    NSString *name; UIImage *icon = nil;
+    if (section >= 2 && ![self SRPlatformsShown]) return nil;
+    if (section < 2 && [[self SRArray:section] count] == 0) return nil;
+    NSString *name; NSString *pid = @""; UIImage *icon = nil;
     if (section == 0) { name = @"Lokal"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.45f alpha:1.0f]); }
     else if (section == 1) { name = @"Weitere Ordner"; icon = SRBadge(@"\u266A", [UIColor colorWithWhite:0.35f alpha:1.0f]); }
     else {
-        name = [m_srarrayplugin count] ? [self SRSourceName] : (m_srprogname ? m_srprogname : @"Quelle");
-        // the plugin's own icon: Documents/Plugins/<plugin id>.png (put there by the user); otherwise a round badge with the first letter
+        NSArray *pl = [self SRPlatforms];
+        int pi = section - 2;
+        NSDictionary *pd = (pi >= 0 && pi < (int)[pl count]) ? [pl objectAtIndex:pi] : nil;
+        pid = [pd objectForKey:@"id"] ? [pd objectForKey:@"id"] : @"";
+        name = [pd objectForKey:@"name"] ? [pd objectForKey:@"name"] : @"Quelle";
+        NSString *note = [pd objectForKey:@"note"];
+        if ([note length]) name = [name stringByAppendingFormat:@" \u00B7 %@", note];
+        // the plugin's own icon: Documents/Plugins/<plugin id>.png; otherwise the one shipped in the bundle, then a round badge
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-        NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""))] stringByAppendingPathExtension:@"png"];
+        NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:pid] stringByAppendingPathExtension:@"png"];
         icon = [UIImage imageWithContentsOfFile:ip];
-        if (icon == nil) {      // icon shipped with the app (Plugins/<id>.png in the bundle)
-            NSString *bp = [[[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""))];
+        if (icon == nil) {
+            NSString *bp = [[[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:pid];
             icon = [UIImage imageWithContentsOfFile:[bp stringByAppendingPathExtension:@"png"]];
         }
-        if (icon == nil) icon = SRBuiltinIcon([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""));
+        if (icon == nil) icon = SRBuiltinIcon(pid);
         if (icon == nil) icon = SRBadge([[name substringToIndex:1] uppercaseString], [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f]);
     }
     UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 26.0f)] autorelease];
     [v setBackgroundColor:[UIColor colorWithWhite:0.15f alpha:1.0f]];
-    if (section == 2 && m_srprog >= 0.0f) {
+    if (section >= 2 && m_srprog >= 0.0f) {
         UIView *fill = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width * m_srprog, 26.0f)] autorelease];
         [fill setBackgroundColor:[UIColor colorWithWhite:0.38f alpha:1.0f]];
         [fill setUserInteractionEnabled:NO];
@@ -1072,7 +1147,8 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     int ls = [self LogicalSection:section];
-    return ([[self SRArray:ls] count] > 0 || (ls == 2 && m_srprog >= 0.0f)) ? 26.0f : 0.0f;
+    if (ls >= 2) return [self SRPlatformsShown] ? 26.0f : 0.0f;
+    return ([[self SRArray:ls] count] > 0) ? 26.0f : 0.0f;
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
@@ -1188,14 +1264,16 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
             [m_srlock lock];
             [m_srarrayplugin removeAllObjects];
             [m_srarrayplugin addObjectsFromArray:clips];
+            [self SRRebuildPlat];
             [m_srlock unlock];
-            [self SetResortFlag:2 withval:YES];
+            for (int rf = 2; rf < 16; rf++) [self SetResortFlag:rf withval:YES];
             [m_srtableview reloadData];
         }];
     } else {
         [m_srlock lock];
         [m_srarrayother removeAllObjects];
         [m_srarrayplugin removeAllObjects];
+        [self SRRebuildPlat];
         [m_srlock unlock];
         [m_srtableview performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO];
         [[RfxPluginManager shared] SearchText:@"" done:nil];      // ends a running search bar
@@ -1241,6 +1319,7 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 
 - (int)getNumberOfRowsInSection:(int)numberOfRowsInSection {
     NSArray *a = [self SRArray:numberOfRowsInSection];
+    if (numberOfRowsInSection >= 2 && [a count] == 0) return (m_srprog < 0.0f) ? 1 : 0;      // "Keine Ergebnisse" once the search is over
     int rows = 0, cols = 0;
     [self GetTableMatrix:(int)[a count] withitemsincolum:&rows withcolumcount:&cols];
     return rows;

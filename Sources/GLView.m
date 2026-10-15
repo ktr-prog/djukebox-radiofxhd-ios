@@ -628,17 +628,24 @@ static BOOL gRfxWaterOn = NO;
             Z += q * 14.4;
         }
         double xc = R2 * cs;                                          // horizontal position
-        double betaA = -1.0;
+        double betaA = -1.0, betaS = 1.0, betaLift = 0.0;
         if (gRfxBetaLook && ![self m_pinching] && [self m_selectedfolderid] != -33) {
-            // dev menu "Beta-Look": the layout of the first Tobit Djukebox (the one in the pictures): the cover in the middle, the
-            // neighbours at its side almost as big, further covers piled up behind them, all facing the front
+            // dev menu "Beta-Look": the first Tobit Djukebox (see the pictures): the cover in the middle is the biggest, the two
+            // neighbours sit right next to it (a little smaller, tiny gap, same baseline), behind each of them the next covers are
+            // piled up - every layer a bit further out, a bit higher (it peeks out above the cover in front) and a bit smaller.
+            // All covers face the front; every cover keeps its reflection.
             double rel = (double)k - 6.0 - frac;
             double a = fabs(rel), sg = (rel < 0) ? -1.0 : 1.0;
+            double layer = fmin(fmax(a - 1.0, 0.0), 2.4);
             betaA = a;
-            xc = sg * (a < 1.0 ? a * 3.0 : 3.0 + fmin(a - 1.0, 2.0) * 0.8 + fmax(a - 3.0, 0.0) * 0.2);
-            Z = 14.4 - 0.7 * fmin(a, 1.0) - 0.9 * fmin(fmax(a - 1.0, 0.0), 2.0) - 0.25 * fmax(a - 3.0, 0.0);
+            betaS = (a < 1.0) ? (1.0 - 0.14 * a) : (0.86 - 0.06 * layer);
+            betaLift = 0.42 * layer;
+            xc = sg * (a < 1.0 ? a * 2.32 : 2.32 + layer * 0.30 + fmax(a - 3.4, 0.0) * 0.3);
+            Z = 14.4 - 0.5 * fmin(a, 1.0) - 0.5 * layer;
+            if (a > 3.0) alpha *= fmax(0.0, 1.0 - (a - 3.0) / 0.6);       // the pile ends after three layers
         }
         double yShift = (Z * sin((double)m_inclineangle / 180.0 * -M_PI)) * -0.125;
+        if (betaA >= 0.0) yShift += betaLift - (double)kA * (1.0 - betaS);      // bottoms of the neighbours on the baseline, piled covers lifted
         float flipY;
         if (backingWidth > backingHeight) flipY = ISIPAD ? -0.24f : 0.01f;
         else flipY = 0.3f;
@@ -737,6 +744,7 @@ static BOOL gRfxWaterOn = NO;
             glBindTexture(GL_TEXTURE_2D, [tile texture]);
             ClipObject *clipForId = [[self m_tilearray] objectAtIndex:tileIdx];
             if ([clipForId ID] == m_id_to_delete) hh = hh * m_deleteexplodefactor;
+            if (betaA >= 0.0) hh *= (float)betaS;
             GLfloat q[12];
             memset(q, 0, sizeof(q));
             float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
@@ -888,6 +896,7 @@ static BOOL gRfxWaterOn = NO;
                     again = YES;
                 }
                 if ([[[self m_tilearray] objectAtIndex:tileIdx] ID] == m_id_to_delete) h28 = h28 * m_deleteexplodefactor;
+                if (betaA >= 0.0) { h28 *= (float)betaS; h30 *= (float)betaS; }
                 float x0 = (float)(xc - (double)h28), x1 = (float)((double)h28 + xc);
                 float yLow = ((-h28) - h30) + Yr;
                 float yUp = Yr - h28;
@@ -2421,7 +2430,7 @@ scroll:
         }
     }
     [m_arraylock unlock];
-    if (![self m_autospin]) return;
+    if (dist == -1) return;
     [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:0] afterDelay:0.01];
     if (dist >= 21) {
         // far away: jump to 13 covers in front of the target so the animation stays short
@@ -2432,26 +2441,39 @@ scroll:
         offset = s;
         dist = 13;
     }
-    n = (int)[[self m_tilearray] count];
-    float fdist = (float)dist;
-    float startOffset = (float)offset;
-    // Port change: time based, slow ease-in/ease-out (the original ran at a fixed step per frame and peaked at ~36 covers/s).
-    double dur = (1.3 + 0.3 * sqrt((double)fdist) * 2.0) * 0.9;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
-    double t0 = CACurrentMediaTime();
-    for (;;) {
-        double t = (CACurrentMediaTime() - t0) / dur;
-        if (t >= 1.0 || [DEL g_end] || gv_kioskflag) break;
-        double e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);     // smootherstep
-        double o = (double)(startOffset + dir * (float)(e * (double)fdist));
-        if ((int)o >= n) o -= (double)n; else if (o < 0) o += (double)n;
-        offset = o;
-        [self drawView];
-        [NSThread sleepForTimeInterval:0.002];
-    }
-    double o = (double)(startOffset + dir * fdist);
-    if ((int)o >= n) o -= (double)n; else if (o < 0) o += (double)n;
+    // Port change: the turn is driven by a display link on the main run loop.  It used to be a loop that blocked the main thread for
+    // 2-3 seconds, so taps (search button, keyboard), the search list and the tutorial froze while the coverflow turned by itself.
+    // Time based, slow ease-in/ease-out (the original ran at a fixed step per frame and peaked at ~36 covers/s).
+    m_spinDist = (double)dist; m_spinDir = (double)dir; m_spinStartOff = offset;
+    m_spinDur = (1.3 + 0.3 * sqrt((double)dist) * 2.0) * 0.9;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
+    m_spinT0 = CACurrentMediaTime();
+    [m_spinLink invalidate];
+    m_spinLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(SpinTick:)];
+    [m_spinLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)SpinSetOffsetFrom:(double)startOff moved:(double)moved {
+    int n = (int)[[self m_tilearray] count];
+    if (n <= 0) return;
+    double o = startOff + m_spinDir * moved;
+    while (o >= (double)n) o -= (double)n;
+    while (o < 0) o += (double)n;
     offset = o;
-    [self drawView];
+}
+
+- (void)SpinTick:(CADisplayLink *)link {
+    if (!m_autospin) { [link invalidate]; if (m_spinLink == link) m_spinLink = nil; return; }
+    double t = (CACurrentMediaTime() - m_spinT0) / m_spinDur;
+    BOOL done = (t >= 1.0 || [DEL g_end] || gv_kioskflag || [self m_fingersonscreen] > 0);
+    if (!done) {
+        double e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);     // smootherstep
+        [self SpinSetOffsetFrom:m_spinStartOff moved:e * m_spinDist];
+        [self drawView];
+        return;
+    }
+    [link invalidate];
+    if (m_spinLink == link) m_spinLink = nil;
+    if (t >= 1.0) [self SpinSetOffsetFrom:m_spinStartOff moved:m_spinDist];
     [self setM_autospin:NO];
     [self drawView];                      // restarts the frame chain (water, covers that are still loading)
     [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:1] afterDelay:0.01];

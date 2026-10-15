@@ -242,11 +242,11 @@
         // server flag 0x100, "volume button disabled": the button is simply not there)
         NSUserDefaults *devud = [NSUserDefaults standardUserDefaults];
         BOOL devAll = [devud boolForKey:@"RfxDevAllButtons"], devNoVol = [devud boolForKey:@"RfxDevNoVolume"];
-        if (devAll && [self m_pinchstatus] != 2) {
+        if (devAll && [self m_pinchstatus] == 0) {
             if (!(i == 0 && devNoVol)) [m_registers[i] setM_enabled:YES];
             continue;
         }
-        if ([self m_pinchstatus] == 2) continue;                         // collections view: no search symbol, nothing else
+        if ([self m_pinchstatus] != 0) continue;                         // collections view (and while it opens / closes): no search symbol, nothing else
         if (i == 1 || i == 3 || i >= 6) continue;
         BOOL online = [DEL IsOnline];
         switch (i) {
@@ -342,7 +342,7 @@
 - (void)ShowVolumeForOverview {
     if ([m_registers[0] m_enabled]) return;
     [UIView beginAnimations:@"volaniX" context:NULL];
-    [UIView setAnimationDuration:0.1];
+    [UIView setAnimationDuration:0.6];
     [m_registers[0] setM_enabled:YES];
     [m_registers[0] setAlpha:1.0f];
     CGSize pad = [DEL GetiPadSize];
@@ -475,7 +475,7 @@
         }
         if ([m_registers[0] m_enabled] && [self m_pinchstatus] == 2) {
             [UIView beginAnimations:@"volaniX" context:NULL];
-            [UIView setAnimationDuration:0.1];
+            [UIView setAnimationDuration:0.6];
             [m_registers[0] setM_enabled:NO];
             [m_registers[0] setAlpha:0.0f];
             CGSize pad = [DEL GetiPadSize];

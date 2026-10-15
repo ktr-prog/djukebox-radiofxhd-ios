@@ -633,6 +633,19 @@ static RfxPluginManager *gRfxPM = nil;
     return ok;
 }
 - (BOOL)IsAutostart:(NSString *)name { return [[self AutostartList] containsObject:name]; }
+- (NSArray *)SearchPlatforms {
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *n in [[m_hosts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        RfxPluginHost *h = [m_hosts objectForKey:n];
+        if (![h has:@"search"]) continue;
+        NSString *pn = [[[h pluginName] componentsSeparatedByString:@" ("] objectAtIndex:0];
+        if ([pn length] == 0) pn = n;
+        NSString *rn = [[NSUserDefaults standardUserDefaults] stringForKey:[@"RfxSrcNote." stringByAppendingString:n]];
+        [out addObject:[NSDictionary dictionaryWithObjectsAndKeys:n, @"id", pn, @"name", ([rn length] ? rn : @""), @"note", nil]];
+    }
+    return out;
+}
+
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
 
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name {

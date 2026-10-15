@@ -12,6 +12,8 @@ extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukeb
 
 @interface GLView : UIView <UIGestureRecognizerDelegate, UIScrollViewDelegate, UITableViewDelegate, UITableViewDataSource, NSCoding> {
     double offset;  // +48
+    CADisplayLink *m_spinLink;
+    double m_spinDist, m_spinDir, m_spinStartOff, m_spinDur, m_spinT0;
     int backingWidth;  // +56
     int backingHeight;  // +60
     float m_oglscale;  // +64
