@@ -653,7 +653,24 @@ static RfxPluginManager *gRfxPM = nil;
 + (void)Toast:(NSString *)t { RfxToast(t); }
 - (void)setKiosk:(KioskView *)kv { m_kv = kv; gRfxToastHost = kv; }
 
-- (NSArray *)AllNames { return [[RfxPluginPaths() allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]; }
+// Order of the music providers (search sections, plugin list): Documents is not involved, kept in NSUserDefaults "RfxPluginOrder".
+static NSArray *RfxSortByOrder(NSArray *names) {
+    NSArray *ord = [[NSUserDefaults standardUserDefaults] arrayForKey:@"RfxPluginOrder"];
+    return [names sortedArrayUsingComparator:^NSComparisonResult(id x, id y) {
+        NSUInteger ix = ord ? [ord indexOfObject:x] : NSNotFound, iy = ord ? [ord indexOfObject:y] : NSNotFound;
+        if (ix != iy) return ix < iy ? NSOrderedAscending : NSOrderedDescending;       // listed ones first, in their order
+        return [(NSString *)x caseInsensitiveCompare:y];
+    }];
+}
+- (NSArray *)AllNames { return RfxSortByOrder([RfxPluginPaths() allKeys]); }
+- (void)MovePlugin:(NSString *)name by:(int)delta {
+    NSMutableArray *a = [NSMutableArray arrayWithArray:[self AllNames]];
+    int i = (int)[a indexOfObject:name], j = i + delta;
+    if (i < 0 || j < 0 || j >= (int)[a count]) return;
+    [a exchangeObjectAtIndex:i withObjectAtIndex:j];
+    [[NSUserDefaults standardUserDefaults] setObject:a forKey:@"RfxPluginOrder"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
 
 // never configured: nothing starts by itself; plugins (Qobuz needs your keys) you switch on yourself.
 // Names of plugins that no longer exist (the old "archive" plugin) are dropped.
@@ -668,7 +685,7 @@ static RfxPluginManager *gRfxPM = nil;
 - (BOOL)IsAutostart:(NSString *)name { return [[self AutostartList] containsObject:name]; }
 - (NSArray *)SearchPlatforms {
     NSMutableArray *out = [NSMutableArray array];
-    for (NSString *n in [[m_hosts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+    for (NSString *n in RfxSortByOrder([m_hosts allKeys])) {
         RfxPluginHost *h = [m_hosts objectForKey:n];
         if (![h has:@"search"]) continue;
         NSString *pn = [[[h pluginName] componentsSeparatedByString:@" ("] objectAtIndex:0];
@@ -1937,7 +1954,7 @@ static RfxPluginManager *gRfxPM = nil;
         y += 40.0f;
         for (int i = 0; i < (int)[names count]; i++) {
             NSString *n = [names objectAtIndex:i];
-            UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
+            UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f + 84.0f, y, rowW - 164.0f, 31.0f)];
             [l setText:n]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
             [l setFont:[UIFont systemFontOfSize:19.0f]];
             [sv addSubview:l]; [l release];
@@ -1946,6 +1963,16 @@ static RfxPluginManager *gRfxPM = nil;
             [sw setTag:7800 + i];
             [sw addTarget:self action:@selector(DevPluginChanged:) forControlEvents:UIControlEventValueChanged];
             [sv addSubview:sw]; [sw release];
+            for (int k = 0; k < 2; k++) {       // order of the providers: up / down
+                UIButton *ab = [UIButton buttonWithType:UIButtonTypeSystem];
+                [ab setFrame:CGRectMake(cx - rowW * 0.5f + 40.0f * k, y - 3.0f, 40.0f, 37.0f)];
+                [ab setTitle:(k == 0 ? @"\u25B2" : @"\u25BC") forState:UIControlStateNormal];
+                [[ab titleLabel] setFont:[UIFont systemFontOfSize:20.0f]];
+                [ab setEnabled:(k == 0 ? i > 0 : i < (int)[names count] - 1)];
+                [ab setTag:(k == 0 ? 7900 : 7950) + i];
+                [ab addTarget:self action:@selector(DevPluginMove:) forControlEvents:UIControlEventTouchUpInside];
+                [sv addSubview:ab];
+            }
             y += 46.0f;
         }
     }
@@ -2044,6 +2071,16 @@ static RfxPluginManager *gRfxPM = nil;
     NSString *n = [names objectAtIndex:i];
     [[RfxPluginManager shared] SetAutostart:[sw isOn] forName:n];
     RfxToast([NSString stringWithFormat:@"%@: %@", n, ([sw isOn] ? @"an (geladen, auch beim nächsten Start)" : @"aus")]);
+}
+
+- (void)DevPluginMove:(UIButton *)bt {
+    NSArray *names = [[RfxPluginManager shared] AllNames];
+    int t = (int)[bt tag], up = (t < 7950);
+    int i = t - (up ? 7900 : 7950);
+    if (i < 0 || i >= (int)[names count]) return;
+    [[RfxPluginManager shared] MovePlugin:[names objectAtIndex:i] by:(up ? -1 : 1)];
+    [self CloseDevMenu];
+    [self ShowDevMenu];            // rebuild with the new order (search sections follow the next search)
 }
 
 - (void)OpenSourcesPanel {
@@ -4474,7 +4511,7 @@ static void KV_PlayStatus(NSString *text) {
             if ([self m_pausebegintime] > 0) [self ContinueFunction];
         }
     }
-    [m_glv ReInitThread];
+    [m_glv ResumeAfterBackground];
 }
 
 - (void)TryReleaseMMCMixer {
@@ -4738,7 +4775,27 @@ static void KV_PlayStatus(NSString *text) {
     if ([mask CGImage]) CGContextDrawImage(c2, CGRectMake(0, 0, s, s), [mask CGImage]);
     CGContextSetBlendMode(c2, kCGBlendModeLuminosity);
     CGContextDrawImage(c2, CGRectMake(0, 0, s, s), [colored CGImage]);
-    return [[ad EndImageContext:c2] retain];
+    UIImage *res = [ad EndImageContext:c2];
+    // Make sure nothing keeps a colour tint (the mask/luminosity blend left some): force R=G=B on the finished picture, alpha is kept.
+    CGImageRef cg = [res CGImage];
+    if (cg != NULL) {
+        size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGContextRef bc = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(cs);
+        if (bc != NULL) {
+            CGContextDrawImage(bc, CGRectMake(0, 0, w, h), cg);
+            unsigned char *px = (unsigned char *)CGBitmapContextGetData(bc);
+            for (size_t i = 0; i < w * h; i++, px += 4) {
+                unsigned char g = (unsigned char)((px[0] * 77 + px[1] * 151 + px[2] * 28) >> 8);
+                px[0] = px[1] = px[2] = g;
+            }
+            CGImageRef gi = CGBitmapContextCreateImage(bc);
+            if (gi != NULL) { res = [UIImage imageWithCGImage:gi scale:[res scale] orientation:UIImageOrientationUp]; CGImageRelease(gi); }
+            CGContextRelease(bc);
+        }
+    }
+    return [res retain];
 }
 
 

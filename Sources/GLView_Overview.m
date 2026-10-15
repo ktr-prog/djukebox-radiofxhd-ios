@@ -12,6 +12,10 @@
 
 #define DEL ((RadioAppDelegate *)[[UIApplication sharedApplication] delegate])
 
+// The shrink / grow animations draw their steps in a loop; without a pause the steps flew by in a few milliseconds and the
+// transition looked like a jump.  One step now lasts about one display frame and a bit.
+static void RfxPinchPause(double sec) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, sec, false); }
+
 @implementation GLView (Overview)
 
 - (void)AddPinch:(int)pinch {
@@ -211,7 +215,8 @@
                 m_pinchscale = (float)((double)m_pinchscale + 0.1);
                 if (m_pinchscale > 1.0f) m_pinchscale = 1.0f;
             }
-            [self drawView];
+            [self drawView];            [self drawView];
+            RfxPinchPause(0.022);
         }
     }
 
@@ -346,12 +351,13 @@
         m_pinchscale = (float)((double)m_pinchscale + 0.1);
         [self drawView];
         [m_titlelabel setAlpha:m_additionalalpha];
-        [m_interpretlabel setAlpha:m_additionalalpha];
+        [m_interpretlabel setAlpha:m_additionalalpha];        RfxPinchPause(0.022);
     }
     // little bounce at the end
     for (int i = 0; i < 8; i++) {
         m_pinchscale = (float)((double)m_pinchscale + (i <= 3 ? 0.005 : -0.005));
         [self drawView];
+        RfxPinchPause(0.02);
     }
     [m_titlelabel setAlpha:1.0f];
     [m_interpretlabel setAlpha:1.0f];

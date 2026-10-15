@@ -300,6 +300,7 @@ extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukeb
 - (void)RemoveQueuedFrom:(NSMutableArray *)cand;
 - (void)MarkClipPlayed:(ClipObject *)clip;
 - (void)FinishGL;
+- (void)ResumeAfterBackground;
 - (void)SelectClipImmediately:(ClipObject *)clip;
 - (void)startCircleAnimation:(double)circleAnimation;
 - (void)driveCircleAnimation;

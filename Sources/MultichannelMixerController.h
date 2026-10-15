@@ -19,6 +19,10 @@
 // data[0] = left plane, data[1] = right plane (Float32 samples), wpos/rpos are monotonically increasing frame
 // counters (reader thread writes wpos, render callback writes rpos).
 #define kMCMRingFrames     262144          // power of two, <= 400000
+// low-passed (bass) level of every bus, written by the render callback; the coverflow lets the playing cover pulse with it
+extern volatile float gRfxBeatBus[kMCMNumBuses];
+float RfxBeatLevel(void);
+
 typedef struct SoundBuffer {
     AudioStreamBasicDescription asbd;
     SInt32   data[2][400000];              // ring planes (Float32 bit patterns)

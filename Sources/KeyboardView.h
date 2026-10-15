@@ -61,6 +61,7 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
     float m_srprog;                   // search progress shown as fill of the plugin section header (< 0: none)
     NSString *m_srprogname;           // source name / id shown in that header while it loads
     NSString *m_srprogid;
+    NSString *m_srdone;               // search text the last finished plugin search was for (placeholder rows until it matches)
     UIView *m_srfill;                 // fill view of the current header (not retained)
     BOOL m_srreloadpending;
     int m_cursoroff;                  // cursor position: characters before the end of the search text

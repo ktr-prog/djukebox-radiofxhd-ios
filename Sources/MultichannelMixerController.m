@@ -1,4 +1,5 @@
 // Recovered from -[MultichannelMixerController ...] @0xbdd10..0xbf2c8 and C helper renderInput @0xbdbb4.
+#import <math.h>
 #import "MultichannelMixerController.h"
 #import "ClipObject.h"
 #import "RadioAppDelegate.h"
@@ -52,6 +53,10 @@ static void MCM_FloatFormat(AudioStreamBasicDescription *d, double rate) {
 // the engine / hardware rate the app asks for (every title is 44.1 kHz, so nothing is resampled)
 #define kMCMFixedRate 44100.0
 
+volatile float gRfxBeatBus[kMCMNumBuses];
+static float gRfxLP[kMCMNumBuses];
+float RfxBeatLevel(void) { float m = 0; for (int i = 0; i < kMCMNumBuses; i++) if (gRfxBeatBus[i] > m) m = gRfxBeatBus[i]; return m; }
+
 // ---- Render callback (@0xbdbb4) -------------------------------------------------------------
 // refcon points at mSoundBuffer[0]; the bus number selects the entry.
 static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioActionFlags,
@@ -70,6 +75,7 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
     UInt32 avail = w - r;
     if (avail > kMCMRingFrames) avail = 0;      // inconsistent (bus is being reset): play silence
     UInt32 take = (avail < inNumberFrames) ? avail : inNumberFrames;
+    float lp = (inBusNumber < kMCMNumBuses) ? gRfxLP[inBusNumber] : 0.0f, pk = 0.0f;
 
     for (UInt32 i = 0; i < inNumberFrames; i++) {
         float l = 0.0f, rv = 0.0f;
@@ -78,6 +84,8 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
             l = ringL[idx];
             rv = ringR[idx];
         }
+        lp += 0.03f * (0.5f * (l + rv) - lp);                 // one-pole low-pass (~200 Hz): kick / bass
+        if (fabsf(lp) > pk) pk = fabsf(lp);
         if (inBusNumber < 2) {
             outA[i] = l;
             outB[i] = sb->isStereo ? rv : (sb->mMixBus ? l : 0.0f);
@@ -92,6 +100,7 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
             outB[i] = l;
         }
     }
+    if (inBusNumber < kMCMNumBuses) { gRfxLP[inBusNumber] = lp; gRfxBeatBus[inBusNumber] = pk; }
     if (take != 0) __atomic_store_n(&sb->rpos, r + take, __ATOMIC_RELEASE);
     return 0;
 }

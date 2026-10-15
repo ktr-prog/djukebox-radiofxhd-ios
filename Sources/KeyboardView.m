@@ -307,7 +307,8 @@ static void SRCollectTag(UIView *root, int tag, NSMutableArray *out) {
     BOOL wasVisible = (m_srprog >= 0.0f);
     if (fraction < 0.0f) {
         m_srprog = -1.0f;
-        if (wasVisible) [m_srtableview reloadData];
+        [m_srdone release]; m_srdone = [[[self m_searchlabel] text] copy];
+        [m_srtableview reloadData];
         return;
     }
     if (fraction > 1.0f) fraction = 1.0f;
@@ -864,6 +865,7 @@ static void SRCollectTag(UIView *root, int tag, NSMutableArray *out) {
     [m_srlock lock];
     int count = (int)[src count];
     [m_srlock unlock];
+    if (section >= 2 && count == 0 && [self SRLoading]) return [self SRSkeletonCell:tableView];
     if (section >= 2 && count == 0) {
         UITableViewCell *ec = [tableView dequeueReusableCellWithIdentifier:@"cellid_empty"];
         if (ec == nil) {
@@ -1013,6 +1015,41 @@ static NSString *SRClipPlugin(ClipObject *c) {
         if (a == nil) { a = [NSMutableArray array]; [m_srplatitems setObject:a forKey:pid]; }
         [a addObject:c];
     }
+}
+
+- (BOOL)SRLoading {
+    NSString *t = [[self m_searchlabel] text];
+    return (m_srprog >= 0.0f) || (t != nil && ![t isEqualToString:(m_srdone != nil ? m_srdone : @"")]);
+}
+
+// Placeholder ("Schablone") for a platform that has not delivered yet: three grey cover squares with text bars, softly pulsing.
+- (UITableViewCell *)SRSkeletonCell:(UITableView *)tableView {
+    UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"cellid_skel"];
+    if (c == nil) {
+        c = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cellid_skel"] autorelease];
+        [c setBackgroundColor:[UIColor clearColor]];
+        [c setSelectionStyle:UITableViewCellSelectionStyleNone];
+        UIView *box = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 900.0f, 60.0f)] autorelease];
+        [box setTag:7792];
+        [[c contentView] addSubview:box];
+        UIColor *g = [UIColor colorWithWhite:0.22f alpha:1.0f];
+        for (int i = 0; i < 3; i++) {
+            float x = 12.0f + i * 290.0f;
+            UIView *cv = [[[UIView alloc] initWithFrame:CGRectMake(x, 6.0f, 48.0f, 48.0f)] autorelease];
+            [cv setBackgroundColor:g]; [[cv layer] setCornerRadius:4.0f]; [box addSubview:cv];
+            UIView *b1 = [[[UIView alloc] initWithFrame:CGRectMake(x + 58.0f, 14.0f, 170.0f, 12.0f)] autorelease];
+            [b1 setBackgroundColor:g]; [[b1 layer] setCornerRadius:6.0f]; [box addSubview:b1];
+            UIView *b2 = [[[UIView alloc] initWithFrame:CGRectMake(x + 58.0f, 34.0f, 110.0f, 10.0f)] autorelease];
+            [b2 setBackgroundColor:g]; [[b2 layer] setCornerRadius:5.0f]; [box addSubview:b2];
+        }
+    }
+    UIView *box = [[c contentView] viewWithTag:7792];
+    [[box layer] removeAllAnimations];
+    CABasicAnimation *an = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    [an setFromValue:[NSNumber numberWithFloat:1.0f]]; [an setToValue:[NSNumber numberWithFloat:0.35f]];
+    [an setDuration:0.8]; [an setAutoreverses:YES]; [an setRepeatCount:HUGE_VALF];
+    [[box layer] addAnimation:an forKey:@"pulse"];
+    return c;
 }
 
 - (NSArray *)SRPlatforms {
@@ -1319,7 +1356,7 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 
 - (int)getNumberOfRowsInSection:(int)numberOfRowsInSection {
     NSArray *a = [self SRArray:numberOfRowsInSection];
-    if (numberOfRowsInSection >= 2 && [a count] == 0) return (m_srprog < 0.0f) ? 1 : 0;      // "Keine Ergebnisse" once the search is over
+    if (numberOfRowsInSection >= 2 && [a count] == 0) return 1;      // placeholder while searching, "Keine Ergebnisse" once the search is over
     int rows = 0, cols = 0;
     [self GetTableMatrix:(int)[a count] withitemsincolum:&rows withcolumcount:&cols];
     return rows;

@@ -331,6 +331,7 @@
 - (void)SearchText:(NSString *)text done:(void (^)(NSString *text, NSArray *clips))done;
 - (void)ImportClip:(ClipObject *)co;
 - (NSArray *)AllNames;
+- (void)MovePlugin:(NSString *)name by:(int)delta;
 - (NSArray *)SearchPlatforms;   // {id, name, note} of every loaded plugin that can search (sorted by name)
 - (BOOL)IsAutostart:(NSString *)name;
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name;

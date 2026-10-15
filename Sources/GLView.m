@@ -3,6 +3,7 @@
 // Feature groups that belong to the dead backend (live-radio channel view -33, Spotify, EPG, card reader,
 // advertising, remote control, third-party UI) are not part of this file; see DEVIATIONS.md.
 #import "GLView.h"
+#import "MultichannelMixerController.h"
 #import "KioskView.h"
 #import "KeyboardView.h"
 #import "MTScroller.h"
@@ -421,6 +422,35 @@ static BOOL gRfxWaterOn = NO;
 
 #pragma mark - drawing
 
+// ---- beat pulse of the playing cover ----------------------------------------------------------------
+static float gBeatPulse = 0.0f, gBeatEnv = 0.0f, gBeatAvg = 0.0f;
+static double gBeatT = 0;
+static BOOL gBeatFrame = NO;           // drawIntern wants another frame although nothing else animates
+
+static void RfxBeatUpdate(BOOL playing) {
+    double now = CACurrentMediaTime();
+    double dt = now - gBeatT; gBeatT = now;
+    if (dt < 0.0 || dt > 0.1) dt = 0.1;
+    float lvl = playing ? RfxBeatLevel() : 0.0f;
+    gBeatEnv = (lvl > gBeatEnv) ? lvl : gBeatEnv + (lvl - gBeatEnv) * (float)(1.0 - exp(-dt / 0.12));
+    gBeatAvg += (lvl - gBeatAvg) * (float)(1.0 - exp(-dt / 1.5));
+    float target = (gBeatAvg > 0.003f) ? (gBeatEnv - gBeatAvg * 1.05f) / (gBeatAvg * 0.9f + 0.01f) : 0.0f;
+    if (target < 0.0f) target = 0.0f; if (target > 1.0f) target = 1.0f;
+    gBeatPulse = (target > gBeatPulse) ? target : gBeatPulse + (target - gBeatPulse) * (float)(1.0 - exp(-dt / 0.09));
+    gBeatFrame = playing && (lvl > 0.002f || gBeatPulse > 0.004f);
+}
+
+// is this tile the title that is playing (or an album that contains it)?
+static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
+    if (tile == nil || pl == nil) return NO;
+    if ([tile m_tracks] != nil) {
+        for (ClipObject *tr in [tile m_tracks]) {
+            if ([tr m_folderid] == -44 ? ([tr m_ipodid] == [pl m_ipodid]) : ([tr ID] == [pl ID])) return YES;
+        }
+    }
+    return [tile m_folderid] == -44 ? ([tile m_ipodid] == [pl m_ipodid]) : ([tile ID] == [pl ID]);
+}
+
 - (void)drawView {
     if ([DEL m_isinbackground]) return;
     [self GetArrayLock:NO];
@@ -429,13 +459,13 @@ static BOOL gRfxWaterOn = NO;
     glBindRenderbufferOES(GL_RENDERBUFFER_OES, viewRenderbuffer);
     [context presentRenderbuffer:GL_RENDERBUFFER_OES];
     [m_arraylock unlock];
-    if (!again) return;
+    if (!again && !gBeatFrame) return;
     if ([self m_fingersonscreen] != 0) return;
     if (timer != nil || [self m_autospin]) return;
     // exactly one pending follow-up frame: several callers of drawView used to start a chain each, the chains piled up and
     // the carousel got sluggish after a while.  60 frames per second while something animates.
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drawView) object:nil];
-    [self performSelector:@selector(drawView) withObject:nil afterDelay:(1.0 / 60.0)];
+    [self performSelector:@selector(drawView) withObject:nil afterDelay:(again ? 1.0 / 60.0 : 1.0 / 40.0)];
 }
 
 // Fills the paint order (the angular slot of every tile) and the picture order (index into the tile array).
@@ -573,6 +603,13 @@ static BOOL gRfxWaterOn = NO;
     [self FillArrays:paintorder withPicOrder:pictureorder];
     if ([paintorder count] == 0) return NO;
 
+    ClipObject *playingClip = nil;
+    {
+        NSArray *pcl = [m_parent m_clips];
+        BOOL pl = ([pcl count] > 0 && [m_parent IsPlayingClips] && [self m_selectedfolderid] != -33);
+        if (pl) playingClip = [pcl objectAtIndex:0];
+        RfxBeatUpdate(pl);
+    }
     double frac = offsetD - (double)(float)floorIdx;                 // [sp+16]
     float maxPinch = pinchScale > 0.0f ? pinchScale : 0.0f;           // s0
     float P = maxPinch > 1.0f ? 1.0f : maxPinch;                      // s2
@@ -641,7 +678,7 @@ static BOOL gRfxWaterOn = NO;
             betaS = (a < 1.0) ? (1.0 - 0.14 * a) : (0.86 - 0.06 * layer);
             betaLift = 0.42 * layer;
             xc = sg * (a < 1.0 ? a * 2.32 : 2.32 + layer * 0.30 + fmax(a - 3.4, 0.0) * 0.3);
-            Z = 14.4 - 0.5 * fmin(a, 1.0) - 0.5 * layer;
+            Z = 14.4;      // coplanar: the perspective would otherwise shrink the neighbours/piles a second time on top of betaS (they came out much too small)
             if (a > 3.0) alpha *= fmax(0.0, 1.0 - (a - 3.0) / 0.6);       // the pile ends after three layers
         }
         double yShift = (Z * sin((double)m_inclineangle / 180.0 * -M_PI)) * -0.125;
@@ -745,6 +782,7 @@ static BOOL gRfxWaterOn = NO;
             ClipObject *clipForId = [[self m_tilearray] objectAtIndex:tileIdx];
             if ([clipForId ID] == m_id_to_delete) hh = hh * m_deleteexplodefactor;
             if (betaA >= 0.0) hh *= (float)betaS;
+            if (gBeatPulse > 0.001f && RfxTileIsPlaying(clipForId, playingClip)) hh *= 1.0f + 0.055f * gBeatPulse;     // the playing cover beats with the music
             GLfloat q[12];
             memset(q, 0, sizeof(q));
             float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
@@ -897,6 +935,7 @@ static BOOL gRfxWaterOn = NO;
                 }
                 if ([[[self m_tilearray] objectAtIndex:tileIdx] ID] == m_id_to_delete) h28 = h28 * m_deleteexplodefactor;
                 if (betaA >= 0.0) { h28 *= (float)betaS; h30 *= (float)betaS; }
+                if (gBeatPulse > 0.001f && RfxTileIsPlaying([[self m_tilearray] objectAtIndex:tileIdx], playingClip)) { h28 *= 1.0f + 0.055f * gBeatPulse; h30 *= 1.0f + 0.055f * gBeatPulse; }
                 float x0 = (float)(xc - (double)h28), x1 = (float)((double)h28 + xc);
                 float yLow = ((-h28) - h30) + Yr;
                 float yUp = Yr - h28;
@@ -2286,8 +2325,28 @@ scroll:
     [self ReInitThread];
 }
 
+static double gRfxLeftT0 = 0;          // when the app was left / the screen locked (0 = in front)
+
+// After a longer lock iOS may have dropped GL resources or sent memory warnings (which also clear the textures); the covers
+// vanished until the next app start.  Rebuild everything the covers need and restart the loader.
+- (void)ResumeAfterBackground {
+    double away = (gRfxLeftT0 > 0) ? (CACurrentMediaTime() - gRfxLeftT0) : 0;
+    gRfxLeftT0 = 0;
+    m_memorywarning = NO;
+    if (context == nil) return;
+    [EAGLContext setCurrentContext:context];
+    if (away > 20.0) {
+        [self EmptyAllTextures];
+        [self CreatePlaceholderTextures];
+    }
+    [self ReInitThread];
+    [self drawView];
+    [self performSelector:@selector(ReInitThread) withObject:nil afterDelay:0.5];
+}
+
 - (void)FinishGL {
     if (context == nil) return;
+    if (gRfxLeftT0 == 0) gRfxLeftT0 = CACurrentMediaTime();
     EAGLContext *old = [EAGLContext currentContext];
     [EAGLContext setCurrentContext:context];
     glFinish();
