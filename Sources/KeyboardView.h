@@ -146,6 +146,8 @@ extern BOOL gRfxPlayNow;       // set while a title the user chose is put into t
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label;
 - (void)SetSearchProgress:(float)fraction label:(NSString *)label pluginId:(NSString *)pid;
 - (void)ReloadResults;
+- (void)ReloadAll;
+- (void)ClearSearchAll;
 - (NSString *)TextWithoutCharBeforeCursor:(NSString *)cur;
 - (void)LayoutBackspaceButton;
 - (void)BackspacePressed;

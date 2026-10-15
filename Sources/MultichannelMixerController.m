@@ -194,8 +194,9 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     // has that rate); everything inside is 32-bit float.
     [[AVAudioSession sharedInstance] setPreferredSampleRate:kMCMFixedRate error:nil];    // ask for 44.1 kHz right away
     [[AVAudioSession sharedInstance] setActive:YES error:nil];
-    mGraphRate = [[AVAudioSession sharedInstance] sampleRate];
-    if (mGraphRate < 8000.0) mGraphRate = 44100.0;
+    // DEVIATION: the engine always runs at 44.1 kHz.  When the hardware stays at 48 kHz the system converts at the very end
+    // (RemoteIO); the app itself never resamples 44.1 kHz titles.
+    mGraphRate = kMCMFixedRate;
 
     AUNode outputNode, mixerNode;
     AudioComponentDescription outDesc = { kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0 };
@@ -364,73 +365,35 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     [self setInputVolume:next value:0.0f];
     [self PlayFile:file atBus:next];
 
-    float curVol = 1.0f, nextVol = 0.0f;
-    for (int i = 0; i < steps; i++) {
-        curVol  -= 1.0f / steps;
-        nextVol += 1.0f / steps;
-        [self setInputVolume:cur value:curVol];
-        [self setInputVolume:next value:nextVol];
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, t / steps, false);
-        if (myFade != m_fadeSerial) return;   // a newer song request took over (it handles the buses now)
+    // DEVIATION: the volume ramp runs on its own thread (about 40 steps per second).  It used to run in a nested run loop of
+    // the main thread for the whole cross fade, which made the UI stutter while a song changed and moved the volume in a
+    // few coarse steps.
+    NSDictionary *fj = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithInt:cur], @"cur", [NSNumber numberWithInt:next], @"next",
+                        [NSNumber numberWithFloat:t], @"t", [NSNumber numberWithInt:myFade], @"fade", nil];
+    [NSThread detachNewThreadSelector:@selector(FadeThread:) toTarget:self withObject:fj];
+}
+
+- (void)FadeThread:(NSDictionary *)fj {
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    int cur = [[fj objectForKey:@"cur"] intValue], next = [[fj objectForKey:@"next"] intValue], myFade = [[fj objectForKey:@"fade"] intValue];
+    float t = [[fj objectForKey:@"t"] floatValue];
+    int steps = (int)(t * 40.0f); if (steps < 20) steps = 20;
+    for (int i = 1; i <= steps; i++) {
+        usleep((useconds_t)(t / steps * 1000000.0f));
+        if (myFade != m_fadeSerial) { [pool release]; return; }   // a newer song request took over (it handles the buses now)
+        float x = (float)i / (float)steps;
+        [self setInputVolume:cur value:1.0f - x];
+        [self setInputVolume:next value:x];
     }
     [self StopPlayingBus:cur];
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
-    if (myFade != m_fadeSerial) return;
-    [self setInputVolume:cur value:1.0f];
-    [self setInputVolume:next value:1.0f];
-}
-
-- (void)ErrorPlayingFile:(int)bus {
-    if (bus == 2) return;
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"MCM_MSG_ERROR_PLAYING_FILE" object:nil];
-}
-
-// Best effort at "never resample": when this is the only song playing, ask iOS to run the hardware at the
-// file's own sample rate and rebuild the graph at whatever rate it grants.  If the route does not honour the
-// request (built-in speakers often stay at 48 kHz) nothing changes and the file is resampled once, as before.
-// Overlapping songs (crossfades) share one graph rate, so the second song is converted to the first one's rate.
-- (void)AdaptGraphToRate:(double)rate forBus:(int)bus {
-    rate = kMCMFixedRate;           // DEVIATION: the engine always runs at 44.1 kHz (all titles are 44.1 kHz)
-    if (!mGraph || rate < 8000.0) return;
-    if (fabs(rate - mGraphRate) < 1.0) return;
-    for (int i = 0; i < kMCMNumBuses; i++)
-        if (i != bus && mxafref[i] != NULL) return;
-    AVAudioSession *sess = [AVAudioSession sharedInstance];
-    Boolean running = false;
-    AUGraphIsRunning(mGraph, &running);
-    if (running) AUGraphStop(mGraph);
-    AUGraphUninitialize(mGraph);
-    // The hardware rate only changes when the session is re-activated with the new preferred rate; then the
-    // device (DAC / USB / Bluetooth) runs at the file's rate and nothing is resampled.
-    [sess setActive:NO error:nil];
-    [sess setPreferredSampleRate:rate error:nil];
-    [sess setActive:YES error:nil];
-    double actual = [sess sampleRate];
-    if (actual < 8000.0 || fabs(actual - mGraphRate) < 1.0) {
-        AUGraphInitialize(mGraph);
-        if (running) AUGraphStart(mGraph);
-        return;
+    usleep(100000);
+    if (myFade == m_fadeSerial) {
+        [self setInputVolume:cur value:1.0f];
+        [self setInputVolume:next value:1.0f];
     }
-    AudioStreamBasicDescription desc;
-    MCM_FloatFormat(&desc, actual);
-    OSStatus r = noErr;
-    for (UInt32 i = 0; i < kMCMNumBuses && r == noErr; i++)
-        r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc));
-    if (r == noErr)
-        r = AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc));
-    if (r != noErr) {                                   // could not switch: go back to the old rate
-        MCM_FloatFormat(&desc, mGraphRate);
-        for (UInt32 i = 0; i < kMCMNumBuses; i++)
-            AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, i, &desc, sizeof(desc));
-        AudioUnitSetProperty(mMixer, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &desc, sizeof(desc));
-    } else {
-        mGraphRate = actual;
-    }
-    AUGraphInitialize(mGraph);
-    if (running) AUGraphStart(mGraph);
+    [pool release];
 }
 
-// ---- reader thread -------------------------------------------------------------------------
 - (void)PlayFileInBackground:(id)job {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     int bus = [[job objectForKey:@"bus"] intValue];

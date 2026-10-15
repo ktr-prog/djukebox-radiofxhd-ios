@@ -242,12 +242,11 @@
         // server flag 0x100, "volume button disabled": the button is simply not there)
         NSUserDefaults *devud = [NSUserDefaults standardUserDefaults];
         BOOL devAll = [devud boolForKey:@"RfxDevAllButtons"], devNoVol = [devud boolForKey:@"RfxDevNoVolume"];
-        if (devAll && !([self m_pinchstatus] == 2 && i != 2)) {
+        if (devAll && [self m_pinchstatus] != 2) {
             if (!(i == 0 && devNoVol)) [m_registers[i] setM_enabled:YES];
             continue;
         }
-        if ([self m_pinchstatus] == 2 && i != 2) continue;
-        if (i == 7) { [m_registers[i] setM_enabled:YES]; continue; }     // port: opens the source plugins panel (or the Videothek if it has films)
+        if ([self m_pinchstatus] == 2) continue;                         // collections view: no search symbol, nothing else
         if (i == 1 || i == 3 || i >= 6) continue;
         BOOL online = [DEL IsOnline];
         switch (i) {

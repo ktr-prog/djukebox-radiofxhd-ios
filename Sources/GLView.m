@@ -33,6 +33,7 @@ static const GLfloat kTexCoordMain[8]    = { 0, 1,  1, 1,  0, 0,  1, 0 };
 static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 
 // Water level of the cover that belongs to a plugin title that is loading (see SetWaterForClipID:level:)
+BOOL gRfxBetaLook = NO;       // dev menu: layout of the first Tobit Djukebox
 static long long gRfxWaterID = 0;
 static float gRfxWaterTarget = 0.0f;
 static float gRfxWaterShown = 0.0f;
@@ -201,6 +202,7 @@ static BOOL gRfxWaterOn = NO;
 
     offset = 0;
     m_flipping = NO;
+    gRfxBetaLook = [[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevBetaLook"];
     m_anglediff = 14.583333333333334;           // 0x402CAAAAAAAAAAAB
     cache = [[DataCache alloc] initWithCapacity:0x6e];
     [cache SetGLPointer:self];
@@ -332,8 +334,10 @@ static BOOL gRfxWaterOn = NO;
     double w2 = (double)(int)(pad.width * 0.5f);
     static const double fx[7] = { 0.0, 0.12, 0.36, 0.776, 1.224, 1.64, 1.88 };
     static const double fw[7] = { 0.12, 0.24, 0.416, 0.448, 0.416, 0.24, 0.12 };
+    static const double bx[7] = { 0.0, 0.12, 0.28, 0.776, 1.224, 1.72, 1.88 };      // beta look: wider rectangles for the neighbours
+    static const double bw[7] = { 0.12, 0.16, 0.496, 0.448, 0.496, 0.16, 0.12 };
     for (int i = 0; i < 7; i++)
-        m_tipprects[i] = CGRectMake((float)(w2 * fx[i]), (float)r1, (float)(w2 * fw[i]), (float)(r2 - r1));
+        m_tipprects[i] = CGRectMake((float)(w2 * (gRfxBetaLook ? bx[i] : fx[i])), (float)r1, (float)(w2 * (gRfxBetaLook ? bw[i] : fw[i])), (float)(r2 - r1));
 }
 
 // Original positions (1024x768 design). On other screen sizes the block is scaled about the vertical screen centre
@@ -624,6 +628,16 @@ static BOOL gRfxWaterOn = NO;
             Z += q * 14.4;
         }
         double xc = R2 * cs;                                          // horizontal position
+        double betaA = -1.0;
+        if (gRfxBetaLook && ![self m_pinching] && [self m_selectedfolderid] != -33) {
+            // dev menu "Beta-Look": the layout of the first Tobit Djukebox (the one in the pictures): the cover in the middle, the
+            // neighbours at its side almost as big, further covers piled up behind them, all facing the front
+            double rel = (double)k - 6.0 - frac;
+            double a = fabs(rel), sg = (rel < 0) ? -1.0 : 1.0;
+            betaA = a;
+            xc = sg * (a < 1.0 ? a * 3.0 : 3.0 + fmin(a - 1.0, 2.0) * 0.8 + fmax(a - 3.0, 0.0) * 0.2);
+            Z = 14.4 - 0.7 * fmin(a, 1.0) - 0.9 * fmin(fmax(a - 1.0, 0.0), 2.0) - 0.25 * fmax(a - 3.0, 0.0);
+        }
         double yShift = (Z * sin((double)m_inclineangle / 180.0 * -M_PI)) * -0.125;
         float flipY;
         if (backingWidth > backingHeight) flipY = ISIPAD ? -0.24f : 0.01f;
@@ -685,6 +699,7 @@ static BOOL gRfxWaterOn = NO;
             if (shd > 1.0) shd = 1.0;
             float shade = (float)shd;
             if (shd < 0.1) shade = 0.1f;
+            if (betaA >= 0.0) shade = (betaA <= 1.0) ? 1.0f : (float)fmax(0.45, 1.0 - 0.25 * (betaA - 1.0));
 
             float hh;
             int pct = [tile percent];
@@ -1374,7 +1389,7 @@ static BOOL gRfxWaterOn = NO;
         [[self m_origarray] addObject:clip];
         NSString *st = [[m_searchview m_searchlabel] text];
         // a plugin title that is loading is always shown, whatever the search field says
-        if ([st length] == 0 || [clip m_folderid] == -88 || [self IsClipInSearchrange:clip withsearchtext:st]) {
+        {   // the carousel is never narrowed by a search text
             int n = (int)[[self m_tilearray] count];
             int at;
             if ([self m_selectedfolderid] != -33) {

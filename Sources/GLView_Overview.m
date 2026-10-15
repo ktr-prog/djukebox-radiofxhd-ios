@@ -161,6 +161,7 @@
     }
     if ([self m_pinching]) return;
     if ([self m_pinchstatus] != 0) return;
+    [m_searchview ClearSearchAll];                 // collections: the search is closed completely (text and results gone)
     [self setM_pinching:YES];
     [self setM_pinchstatus:1];
     m_lastpinchoffset = (int)offset;
@@ -185,11 +186,9 @@
             BOOL ipad = NO;
             for (int i = 0; i < 10; i++) {
                 ipad = [DEL m_isipad];
-                if (!ipad || i != 2) [m_registers[i] setM_enabled:NO];
+                [m_registers[i] setM_enabled:NO];
                 ipad = [DEL m_isipad];
             }
-            if (ipad && m_selectedfolderid == -33 && !(m_lastflags & 2))
-                [m_registers[2] setM_enabled:YES];
             [self ExecuteServerFlagsRest:1];
         }
         mode = 1;

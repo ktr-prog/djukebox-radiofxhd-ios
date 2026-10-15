@@ -74,6 +74,7 @@ typedef struct SoundBuffer {
 - (void)FadeOutInBackground:(id)seconds;
 - (void)PlayFile:(id)file atBus:(int)bus;
 - (void)PlayFile:(id)file widthCrossfadeTime:(float)t inSteps:(int)steps;
+- (void)FadeThread:(NSDictionary *)fj;
 - (int)GetNextBus;
 - (int)GetCurrentBus;
 - (void)PlayFileInBackground:(id)bus;

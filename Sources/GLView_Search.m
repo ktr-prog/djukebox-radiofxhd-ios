@@ -22,13 +22,9 @@
     NSAutoreleasePool *pool = nil;
     if (![NSThread isMainThread]) pool = [[NSAutoreleasePool alloc] init];
 
-    [self GetArrayLock:NO];
-    int oldcount = (int)[[self m_tilearray] count];
-    m_flipping = NO;
-    if (text == nil || [text length] == 0) {
-        [[self m_tilearray] removeAllObjects];
-        [[self m_tilearray] addObjectsFromArray:[self m_origarray]];
-    } else {
+    // DEVIATION: the search never narrows the carousel; it always shows the whole folder.  The hits only go to the result list.
+    NSMutableArray *found = nil;
+    if (text != nil && [text length] != 0) {
         DBOperations *dbo = [[DBOperations alloc] init];
         NSMutableArray *folders = [[NSMutableArray alloc] init];
         [DEL LockDB:0];
@@ -36,43 +32,29 @@
                                    withipodid:[self m_selectedipodid] withspotifyid:[self m_selectedspotifyfolderid]];
         [DEL UnlockDB];
         if (f != nil) { [folders addObject:f]; [f release]; }
-        NSMutableArray *found = [m_searchview SubBGSearch:text withdbop:dbo withfolders:folders];
+        found = [m_searchview SubBGSearch:text withdbop:dbo withfolders:folders];
         [folders release];
-        [[self m_tilearray] removeAllObjects];
-        [[self m_tilearray] addObjectsFromArray:found];
-        [found release];
-        if (dbo != nil) [dbo release];
+        [dbo release];
     }
-    int newcount = (int)[[self m_tilearray] count];
-    if (newcount == oldcount) {
-        // same number of covers: keep the position, just make sure it is in range
-        if (offset < 0) offset = 0;
-        if (offset >= (double)oldcount) offset = (double)(oldcount - 1);
-    } else {
-        offset = (double)((unsigned)newcount >> 1);
-        if (m_tryrestoreoffset != -1 || [self m_trytorestorespotifyid] != nil) {
-            // try to find the song that was playing before the search and centre on it
-            for (int i = 0; i < (int)[[self m_tilearray] count]; i++) {
-                ClipObject *c = [[self m_tilearray] objectAtIndex:i];
-                if ([c ID] == m_tryrestoreoffset &&
-                    [m_parent spotifyIDsMatch:[self m_trytorestorespotifyid] withsecondid:[c m_spotifyid]]) {
-                    offset = (double)i;
-                    break;
-                }
-            }
-            m_tryrestoreoffset = -1;
-            [self setM_trytorestorespotifyid:nil];
-        }
+    [self GetArrayLock:NO];
+    m_flipping = NO;
+    int oldcount = (int)[[self m_tilearray] count];
+    if (oldcount != (int)[[self m_origarray] count]) {         // something narrowed it before: show everything again
+        [[self m_tilearray] removeAllObjects];
+        [[self m_tilearray] addObjectsFromArray:[self m_origarray]];
+        int n = (int)[[self m_tilearray] count];
+        if (n == 0) offset = 0; else if ((int)offset >= n) offset = (double)(n - 1);
     }
     [m_arraylock unlock];
 
     if ([NSThread isMainThread]) [self drawView];
     else [self performSelectorOnMainThread:@selector(drawView) withObject:nil waitUntilDone:YES];
-    [self ReInitThread];
+    NSArray *forList = (found != nil) ? (NSArray *)found : (NSArray *)[self m_tilearray];
     if ([NSThread isMainThread])
-        [m_searchview SetUpSearchList:[self m_tilearray]];
+        [m_searchview SetUpSearchList:forList];
     else
-        [m_searchview performSelectorOnMainThread:@selector(SetUpSearchList:) withObject:[self m_tilearray] waitUntilDone:YES];
+        [m_searchview performSelectorOnMainThread:@selector(SetUpSearchList:) withObject:forList waitUntilDone:YES];
+    [found release];
     if (pool != nil) [pool release];
 }
 

@@ -132,6 +132,20 @@ BOOL gRfxPlayNow = NO;
 - (void)touchesMoved:(NSSet *)touchesMoved withEvent:(UIEvent *)event {
 }
 
+// the search is over: no text, no results, no running search
+- (void)ClearSearchAll {
+    m_cursoroff = 0;
+    [self EmptySearchfield];
+    [self SetCursorFrame];
+    [m_srlock lock];
+    [m_srarray removeAllObjects];
+    [m_srarrayother removeAllObjects];
+    [m_srarrayplugin removeAllObjects];
+    [m_srlock unlock];
+    [m_srtableview reloadData];
+    [[RfxPluginManager shared] SearchText:@"" done:nil];
+}
+
 - (void)DeleteSearchText30Sec {
     // DEVIATION: the original cleared the search text 30 s after the last key.  The text and the results now stay until
     // the user clears them, also after the window was closed and opened again.
@@ -304,14 +318,39 @@ BOOL gRfxPlayNow = NO;
     }
 }
 
-// throttled refresh of the result list while covers arrive one by one
+// Covers arrive one by one: the visible thumbnails of the source section are swapped with a cross dissolve, without
+// reloading the table (a reload cut running fades short, which looked like popping).
 - (void)ReloadResults {
     if (m_srreloadpending) return;
     m_srreloadpending = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         m_srreloadpending = NO;
-        [m_srtableview reloadData];
+        if (m_srshown == nil) m_srshown = [[NSMutableDictionary alloc] init];
+        for (UITableViewCell *cell in [m_srtableview visibleCells]) {
+            for (int c = 0; c < 6; c++) {
+                SImage *img = (SImage *)[cell viewWithTag:c + 100];
+                if (img == nil || [img m_section] != 2 || [img m_id] == -1) continue;
+                ClipObject *co = nil;
+                [m_srlock lock];
+                for (ClipObject *o in m_srarrayplugin) if ([o ID] == [img m_id]) { co = [[o retain] autorelease]; break; }
+                [m_srlock unlock];
+                if (co == nil || [co m_picturepath] == nil) continue;
+                NSDate *mod = [[[NSFileManager defaultManager] attributesOfItemAtPath:[DEL BuildSmallPicpath:[co m_picturepath]] error:nil] fileModificationDate];
+                NSNumber *key = [NSNumber numberWithLongLong:[co ID]];
+                if (mod == nil || [mod isEqualToDate:[m_srshown objectForKey:key]]) continue;
+                UIImage *ni = [m_pkiosk GetSmallImage:co];
+                if (ni == nil) continue;
+                [m_srshown setObject:mod forKey:key];
+                [UIView transitionWithView:img duration:0.6 options:(UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction)
+                                animations:^{ [img setImage:ni]; } completion:nil];
+            }
+        }
     });
+}
+
+// full reload (a source icon arrived)
+- (void)ReloadAll {
+    [m_srtableview reloadData];
 }
 
 // transparent button over the backspace key: works whatever else is going on in the window (search running, bars shown)
@@ -955,7 +994,17 @@ BOOL gRfxPlayNow = NO;
     NSData *j = [[c m_information] dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *d = (j != nil) ? [NSJSONSerialization JSONObjectWithData:j options:0 error:nil] : nil;
     NSString *n = [d isKindOfClass:[NSDictionary class]] ? [d objectForKey:@"_source"] : nil;
-    return ([n isKindOfClass:[NSString class]] && [n length]) ? n : @"Quelle";
+    NSString *nt = [d isKindOfClass:[NSDictionary class]] ? [d objectForKey:@"_note"] : nil;
+    if (![n isKindOfClass:[NSString class]] || [n length] == 0) return @"Quelle";
+    return ([nt isKindOfClass:[NSString class]] && [nt length]) ? [n stringByAppendingFormat:@" \u00B7 %@", nt] : n;
+}
+
+// Icon of a source that is built into the app (PNG, 96 px, base64); sources can also bring their own icon_url.
+static UIImage *SRBuiltinIcon(NSString *pid) {
+    if (![[pid lowercaseString] isEqualToString:@"qobuz"]) return nil;
+    static NSString *b64 = @"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";
+    NSData *d = [[[NSData alloc] initWithBase64EncodedString:b64 options:0] autorelease];
+    return (d != nil) ? [UIImage imageWithData:d scale:3.0f] : nil;
 }
 
 // small round badge: a note for local hits, the first letter of the source for plugin hits
@@ -992,6 +1041,11 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
         NSString *ip = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""))] stringByAppendingPathExtension:@"png"];
         icon = [UIImage imageWithContentsOfFile:ip];
+        if (icon == nil) {      // icon shipped with the app (Plugins/<id>.png in the bundle)
+            NSString *bp = [[[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""))];
+            icon = [UIImage imageWithContentsOfFile:[bp stringByAppendingPathExtension:@"png"]];
+        }
+        if (icon == nil) icon = SRBuiltinIcon([m_srarrayplugin count] ? [self SRSourceId] : (m_srprogid ? m_srprogid : @""));
         if (icon == nil) icon = SRBadge([[name substringToIndex:1] uppercaseString], [UIColor colorWithRed:0.20f green:0.45f blue:0.75f alpha:1.0f]);
     }
     UIView *v = [[[UIView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, [tableView frame].size.width, 26.0f)] autorelease];

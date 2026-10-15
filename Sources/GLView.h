@@ -6,6 +6,8 @@
 #import <OpenGLES/ES1/glext.h>
 #import <QuartzCore/QuartzCore.h>
 
+extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukebox
+
 @class CGPointObject, ClipObject, DataCache, FlowCoverRecord, FolderObject, KeyboardView, KioskView, MTScroller, RegisterImage;
 
 @interface GLView : UIView <UIGestureRecognizerDelegate, UIScrollViewDelegate, UITableViewDelegate, UITableViewDataSource, NSCoding> {

@@ -336,7 +336,7 @@ static void RfxFetchPluginIcon(id urlStr, NSString *pid) {
         if (png == nil) { NSLog(@"[Plugin] icon %@: Format nicht lesbar", urlStr); return; }
         [[NSFileManager defaultManager] createDirectoryAtPath:[dest stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
         [png writeToFile:dest atomically:YES];
-        dispatch_async(dispatch_get_main_queue(), ^{ [[[(KioskView *)gRfxToastHost m_glv] GetKBView] ReloadResults]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [[[(KioskView *)gRfxToastHost m_glv] GetKBView] ReloadAll]; });
     }] resume];
 }
 
@@ -695,6 +695,8 @@ static RfxPluginManager *gRfxPM = nil;
         RfxPluginHost *h = [m_hosts objectForKey:n];
         if ([h has:@"search"]) { pn = [h pluginName]; pid = n; break; }
     }
+    NSString *rn = pid ? [[NSUserDefaults standardUserDefaults] stringForKey:[@"RfxSrcNote." stringByAppendingString:pid]] : nil;
+    if (pn != nil && [rn length]) pn = [[[pn componentsSeparatedByString:@" ("] objectAtIndex:0] stringByAppendingFormat:@" \u00B7 %@", rn];
     [[[m_kv m_glv] GetKBView] SetSearchProgress:(float)(0.9 * (1.0 - exp(-t / 2.5))) label:pn pluginId:pid];
 }
 - (void)SearchIdle {
@@ -738,7 +740,13 @@ static RfxPluginManager *gRfxPM = nil;
         NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:text, @"query", [NSArray arrayWithObjects:@"track", nil], @"kinds",
                            [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:20], @"limit", nil];
         [h call:@"search" params:p done:^(id r, NSString *e) {
+            NSString *note = nil;
             if (e == nil && [r isKindOfClass:[NSDictionary class]]) {
+                id snote = [r objectForKey:@"source_note"];       // e.g. "Premium" / "Free": shown behind the service name
+                if ([snote isKindOfClass:[NSString class]] && [snote length]) {
+                    note = snote;
+                    [[NSUserDefaults standardUserDefaults] setObject:snote forKey:[@"RfxSrcNote." stringByAppendingString:n]];
+                }
                 for (NSDictionary *g in [r objectForKey:@"groups"]) {
                     if (![[g objectForKey:@"kind"] isEqualToString:@"track"]) continue;       // single titles only: no albums, artists, playlists
                     for (NSDictionary *it in [g objectForKey:@"items"]) {
@@ -747,6 +755,7 @@ static RfxPluginManager *gRfxPM = nil;
                         if ([h pluginName] != nil) {      // short source name (text before a bracket) shown under the title
                             NSString *sn = [[[h pluginName] componentsSeparatedByString:@" ("] objectAtIndex:0];
                             if ([sn length]) [m setObject:sn forKey:@"_source"];
+                            if (note != nil) [m setObject:note forKey:@"_note"];
                         }
                         if ([m objectForKey:@"kind"] == nil) [m setObject:[g objectForKey:@"kind"] forKey:@"kind"];
                         [all addObject:m];
@@ -1778,7 +1787,8 @@ static RfxPluginManager *gRfxPM = nil;
         [NSArray arrayWithObjects:@"Schwarzer Rahmen um die Cover", @"RfxDevCoverBorder", [NSNumber numberWithInt:1], nil],
         [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil],
         [NSArray arrayWithObjects:@"Lautstärke-Button deaktivieren", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
-        [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil], nil];
+        [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil],
+        [NSArray arrayWithObjects:@"Beta-Look (erste Djukebox)", @"RfxDevBetaLook", [NSNumber numberWithInt:5], nil], nil];
     for (NSArray *r in rows) {
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
         [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
@@ -1900,6 +1910,12 @@ static RfxPluginManager *gRfxPM = nil;
         [[m_glv GetKBView] InstallVolumeSlider:[DEL GetiPadSize]];
         [[m_glv GetKBView] SetVolSlider:[self m_lastvolume]];
         [m_glv ExecuteServerFlags:[NSNumber numberWithInt:1]];
+        break;
+    case 7755:
+        [d setBool:[sw isOn] forKey:@"RfxDevBetaLook"]; [d synchronize];
+        gRfxBetaLook = [sw isOn];
+        [m_glv SetUpTippRects];
+        [m_glv drawView];
         break;
     case 7754:
         [d setBool:[sw isOn] forKey:@"RfxDevAllButtons"]; [d synchronize];
