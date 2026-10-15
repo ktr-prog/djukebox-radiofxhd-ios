@@ -123,6 +123,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     if (mGraph) DisposeAUGraph(mGraph);
     for (int i = 0; i < kMCMNumBuses; i++) {
         pthread_mutex_destroy(&gBusMutex[i]);
@@ -133,6 +134,45 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
     [super dealloc];
 }
 
+// ---- bit-perfect bookkeeping -----------------------------------------------------------------
+// The graph always runs at 44.1 kHz (CD rate) and the session is asked for 44.1 kHz again on every route change; on AirPlay 1
+// (ALAC 44.1/16) the route then runs at exactly that rate, so CD-quality titles pass untouched.  Volume stays at 1.0 when the
+// dev switch "Lautstärke dem System überlassen" is on (default), so no sample is scaled outside a crossfade.
+- (void)AdaptGraphToRate:(double)rate forBus:(int)bus {
+    (void)rate; (void)bus;      // the engine rate is fixed; titles of another rate are converted once (best quality) on load
+}
+
+- (NSString *)RouteName {
+    AVAudioSessionRouteDescription *rt = [[AVAudioSession sharedInstance] currentRoute];
+    AVAudioSessionPortDescription *o = [[rt outputs] firstObject];
+    if (o == nil) return @"-";
+    NSString *t = [o portType];
+    if ([t isEqualToString:AVAudioSessionPortAirPlay]) return @"AirPlay";
+    if ([t isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return @"Lautsprecher";
+    if ([t isEqualToString:AVAudioSessionPortUSBAudio]) return @"USB";
+    if ([t isEqualToString:AVAudioSessionPortHeadphones]) return @"Kopfhörer";
+    if ([t hasPrefix:@"Bluetooth"]) return @"Bluetooth";
+    return t;
+}
+
+- (void)PostRateInfoForFile:(double)fileHz {
+    double hwHz = [[AVAudioSession sharedInstance] sampleRate];
+    BOOL clean = (fileHz <= 0 || fabs(fileHz - mGraphRate) < 1.0) && fabs(mGraphRate - hwHz) < 1.0;
+    NSString *info = [NSString stringWithFormat:@"file %@  |  engine %.0f  |  device %.0f Hz  |  %@%@",
+                      fileHz > 0 ? [NSString stringWithFormat:@"%.0f", fileHz] : @"-", mGraphRate, hwHz, [self RouteName],
+                      clean ? @"  (bit-perfect path)" : @"  (resampled)"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"RfxSampleRateInfo" object:nil userInfo:[NSDictionary dictionaryWithObject:info forKey:@"text"]];
+    });
+}
+
+- (void)RouteChanged:(NSNotification *)n {
+    AVAudioSession *as = [AVAudioSession sharedInstance];
+    [as setPreferredSampleRate:kMCMFixedRate error:nil];
+    [as setActive:YES error:nil];
+    [self PostRateInfoForFile:0];
+}
+
 - (void)initAudioSession {
     isPlaying = 0;
     memset(mSoundBuffer, 0, kMCMNumBuses * sizeof(SoundBuffer));
@@ -140,6 +180,7 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
         mxafref[i] = NULL;
         mDuration[i] = 0;
     }
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(RouteChanged:) name:AVAudioSessionRouteChangeNotification object:nil];
     OSStatus gr = [self initializeAUGraph];
     if (gr != noErr) { gMCMReported = YES; MCM_Status([NSString stringWithFormat:@"audio graph setup failed: %d", (int)gr]); }
 }
@@ -432,12 +473,8 @@ static BOOL gMCMReported = NO;   // report only the first play attempt
 
     [self AdaptGraphToRate:fileFmt.mSampleRate forBus:bus];
     {
-        double fileHz = fileFmt.mSampleRate, graphHz = mGraphRate, hwHz = [[AVAudioSession sharedInstance] sampleRate];
-        NSString *info = [NSString stringWithFormat:@"file %.0f Hz  |  engine %.0f Hz  |  device %.0f Hz%@", fileHz, graphHz, hwHz,
-                          (fabs(fileHz - graphHz) < 1.0 && fabs(graphHz - hwHz) < 1.0) ? @"  (no resampling)" : @"  (resampled)"];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"RfxSampleRateInfo" object:nil userInfo:[NSDictionary dictionaryWithObject:info forKey:@"text"]];
-        });
+        double fileHz = fileFmt.mSampleRate;
+        [self PostRateInfoForFile:fileHz];
     }
     double ratio = ((mGraphRate > 0) ? mGraphRate : 44100.0) / fileFmt.mSampleRate;       // computed before the format is overridden
     AudioStreamBasicDescription client = fileFmt;

@@ -1786,7 +1786,7 @@ static RfxPluginManager *gRfxPM = nil;
     NSArray *rows = [NSArray arrayWithObjects:
         [NSArray arrayWithObjects:@"Schwarzer Rahmen um die Cover", @"RfxDevCoverBorder", [NSNumber numberWithInt:1], nil],
         [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil],
-        [NSArray arrayWithObjects:@"Lautstärke-Button deaktivieren", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
+        [NSArray arrayWithObjects:@"Bit-Perfect: Lautstärke dem System überlassen", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
         [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil],
         [NSArray arrayWithObjects:@"Beta-Look (erste Djukebox)", @"RfxDevBetaLook", [NSNumber numberWithInt:5], nil], nil];
     for (NSArray *r in rows) {

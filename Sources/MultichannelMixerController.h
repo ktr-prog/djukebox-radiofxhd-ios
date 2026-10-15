@@ -59,6 +59,8 @@ typedef struct SoundBuffer {
 - (BOOL)GetPlayMono;
 - (void)stopAUGraph;
 - (void)AdaptGraphToRate:(double)rate forBus:(int)bus;
+- (NSString *)RouteName;
+- (void)PostRateInfoForFile:(double)fileHz;
 - (void)startAUGraph;
 - (void)setOutputVolume:(float)value;
 - (float)getOutputVolume;
