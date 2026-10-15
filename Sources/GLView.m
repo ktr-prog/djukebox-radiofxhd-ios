@@ -2444,7 +2444,10 @@ scroll:
     // Port change: the turn is driven by a display link on the main run loop.  It used to be a loop that blocked the main thread for
     // 2-3 seconds, so taps (search button, keyboard), the search list and the tutorial froze while the coverflow turned by itself.
     // Time based, slow ease-in/ease-out (the original ran at a fixed step per frame and peaked at ~36 covers/s).
-    m_spinDist = (double)dist; m_spinDir = (double)dir; m_spinStartOff = offset;
+    // Fix: offset is usually fractional (the flow was resting between two covers or came from a drag); the old code moved by a whole
+    // number of covers and so ended on the same fraction = hanging between two covers.  Now the distance is corrected so it lands exactly.
+    double frac = (double)offset - floor((double)offset);
+    m_spinDist = (double)dist - (double)dir * frac; m_spinDir = (double)dir; m_spinStartOff = offset;
     m_spinDur = (1.3 + 0.3 * sqrt((double)dist) * 2.0) * 0.9;           // 1 cover ~1.9 s, 5 covers ~2.6 s, 13 covers ~3.5 s
     m_spinT0 = CACurrentMediaTime();
     [m_spinLink invalidate];
@@ -2474,6 +2477,7 @@ scroll:
     [link invalidate];
     if (m_spinLink == link) m_spinLink = nil;
     if (t >= 1.0) [self SpinSetOffsetFrom:m_spinStartOff moved:m_spinDist];
+    { double r = floor((double)offset + 0.5); int nn = (int)[[self m_tilearray] count]; if (nn > 0 && fabs((double)offset - r) < 0.2 && [self m_fingersonscreen] == 0) { if (r >= nn) r -= nn; offset = r; } }   // snap to the cover
     [self setM_autospin:NO];
     [self drawView];                      // restarts the frame chain (water, covers that are still loading)
     [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:1] afterDelay:0.01];

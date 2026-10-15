@@ -97,6 +97,39 @@ static long long RfxItemID(NSString *plugin, NSString *ref) {
 - (void)call:(NSString *)method params:(NSDictionary *)params done:(void (^)(id result, NSString *err))done;
 @end
 
+// Values file: Documents/Plugins/<plugin>.txt  (same name as the .js).  Lines "NAME = value" (# or // = comment).  They are appended to the
+// script as  var NAME = ...;  so they override the empty gaps in the .js; true/false/numbers stay unquoted, everything else becomes a string.
+static NSString *RfxPluginValues(NSString *pid) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSString *path = [[[docs stringByAppendingPathComponent:@"Plugins"] stringByAppendingPathComponent:pid] stringByAppendingPathExtension:@"txt"];
+    NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (txt == nil) return @"";
+    NSMutableString *out = [NSMutableString stringWithString:@"\n"];
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    for (NSString *raw in [txt componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:ws];
+        if ([line length] == 0 || [line hasPrefix:@"#"] || [line hasPrefix:@"//"]) continue;
+        NSRange r = [line rangeOfString:@"="];
+        if (r.location == NSNotFound || r.location == 0) continue;
+        NSString *key = [[line substringToIndex:r.location] stringByTrimmingCharactersInSet:ws];
+        NSString *val = [[line substringFromIndex:r.location + 1] stringByTrimmingCharactersInSet:ws];
+        if ([val length] >= 2 && (([val hasPrefix:@"'"] && [val hasSuffix:@"'"]) || ([val hasPrefix:@"\""] && [val hasSuffix:@"\""])))
+            val = [val substringWithRange:NSMakeRange(1, [val length] - 2)];
+        if ([val length] == 0) continue;                                       // empty = leave the gap as it is
+        NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
+        if ([key rangeOfCharacterFromSet:bad].location != NSNotFound) continue;
+        BOOL raw2 = [val isEqualToString:@"true"] || [val isEqualToString:@"false"] ||
+                    ([val length] < 10 && [val rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound);
+        if (raw2) [out appendFormat:@"var %@ = %@;\n", key, val];
+        else {
+            NSString *e = [val stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+            e = [e stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+            [out appendFormat:@"var %@ = '%@';\n", key, e];
+        }
+    }
+    return out;
+}
+
 @implementation RfxJSPlugin
 
 - (id)initWithScript:(NSString *)src pluginId:(NSString *)pid error:(NSString **)err {
@@ -278,7 +311,7 @@ static long long RfxItemID(NSString *plugin, NSString *ref) {
     "   .then(function (r) { __native_reply(id, true, JSON.stringify(r === undefined ? null : r)); },\n"
     "         function (e) { __native_reply(id, false, __errText(e)); }); }\n";
     [m_ctx evaluateScript:shim];
-    [m_ctx evaluateScript:src];
+    [m_ctx evaluateScript:[src stringByAppendingString:RfxPluginValues(pid)]];
     // ricercar-style scripts (module.exports.handle / methods / onMessage ...) are adapted to handle(method, params)
     if (firstError == nil) [m_ctx evaluateScript:@"__adapt();"];
     if (firstError == nil && [[m_ctx[@"handle"] toString] hasPrefix:@"undefined"]) firstError = [@"Das Plugin definiert weder handle(method, params) noch eine bekannte Ricercar-Schnittstelle (module.exports.handle, methods, onMessage ...)." retain];
@@ -494,7 +527,7 @@ static NSString *RfxPluginDir(void) {
     [fm createDirectoryAtPath:pdir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *shipped = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:@"Plugins"];
     for (NSString *f in [fm contentsOfDirectoryAtPath:shipped error:nil]) {
-        if ([[f pathExtension] caseInsensitiveCompare:@"js"] != NSOrderedSame) continue;
+        if ([[f pathExtension] caseInsensitiveCompare:@"js"] != NSOrderedSame && [[f pathExtension] caseInsensitiveCompare:@"txt"] != NSOrderedSame) continue;
         NSString *dst = [pdir stringByAppendingPathComponent:f];
         if (![fm fileExistsAtPath:dst]) [fm copyItemAtPath:[shipped stringByAppendingPathComponent:f] toPath:dst error:nil];
     }
