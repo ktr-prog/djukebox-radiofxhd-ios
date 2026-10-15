@@ -984,9 +984,58 @@ static RfxPluginManager *gRfxPM = nil;
                 if (d != nil && [UIImage imageWithData:d] != nil) [d writeToFile:cover atomically:YES];
             }
             __block NSString *msg = nil;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:file]) {
+            // a plugin can hand over request headers (e.g. the User-Agent a stream address was issued for) and say that the
+            // file has to be fetched in pieces (Range requests of 5 MB), which some stream servers require
+            id rhd = [r objectForKey:@"headers"];
+            NSDictionary *hdrs = [rhd isKindOfClass:[NSDictionary class]] ? rhd : nil;
+            long long total = [[r objectForKey:@"size"] respondsToSelector:@selector(longLongValue)] ? [[r objectForKey:@"size"] longLongValue] : 0;
+            BOOL chunked = [[r objectForKey:@"chunked"] boolValue] && total > 0;
+            NSString *ptitle = [it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"";
+            if (![[NSFileManager defaultManager] fileExistsAtPath:file] && chunked) {
+                NSString *part = [file stringByAppendingString:@".part"];
+                [[NSFileManager defaultManager] removeItemAtPath:part error:nil];
+                [[NSFileManager defaultManager] createFileAtPath:part contents:nil attributes:nil];
+                NSFileHandle *wh = [NSFileHandle fileHandleForWritingAtPath:part];
+                long long pos = 0;
+                const long long CH = 5LL * 1048576LL;
+                while (pos < total && msg == nil) {
+                    long long end = (pos + CH - 1 < total - 1) ? pos + CH - 1 : total - 1;
+                    NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:url];
+                    for (NSString *hk in hdrs) [rq setValue:[NSString stringWithFormat:@"%@", [hdrs objectForKey:hk]] forHTTPHeaderField:hk];
+                    [rq setValue:[NSString stringWithFormat:@"bytes=%lld-%lld", pos, end] forHTTPHeaderField:@"Range"];
+                    [rq setTimeoutInterval:40.0];
+                    dispatch_semaphore_t s2 = dispatch_semaphore_create(0);
+                    __block NSData *got = nil;
+                    __block NSInteger gcode = 0;
+                    [[[NSURLSession sharedSession] dataTaskWithRequest:rq completionHandler:^(NSData *d, NSURLResponse *rs, NSError *er) {
+                        gcode = [rs isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)rs statusCode] : 0;
+                        if (er != nil) msg = [[er localizedDescription] copy];
+                        else if (gcode != 206 && gcode != 200) msg = [[NSString stringWithFormat:@"HTTP %ld", (long)gcode] copy];
+                        else got = [d retain];
+                        dispatch_semaphore_signal(s2);
+                    }] resume];
+                    dispatch_semaphore_wait(s2, DISPATCH_TIME_FOREVER);
+                    dispatch_release(s2);
+                    if (got != nil) {
+                        if ([got length] == 0) msg = [@"leere Antwort" copy];
+                        else { [wh writeData:got]; pos += (gcode == 200) ? total : (long long)[got length]; }
+                        [got release];
+                    }
+                    float tf = (float)((double)pos / (double)total);
+                    RfxProgress([NSString stringWithFormat:@"%d/%d  %@  %.1f MB", dc + 1, tot, ptitle, pos / 1048576.0], ((float)dc + tf) / (float)(tot > 0 ? tot : 1));
+                    [wglv SetWaterForClipID:wid level:0.15f + 0.82f * tf];
+                }
+                [wh closeFile];
+                if (msg == nil) {
+                    if (![[NSFileManager defaultManager] moveItemAtPath:part toPath:file error:nil]) msg = [@"Datei nicht ablegbar" copy];
+                } else {
+                    [[NSFileManager defaultManager] removeItemAtPath:part error:nil];
+                }
+            } else if (![[NSFileManager defaultManager] fileExistsAtPath:file]) {
                 dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-                NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
+                NSMutableURLRequest *rq0 = [NSMutableURLRequest requestWithURL:url];
+                for (NSString *hk in hdrs) [rq0 setValue:[NSString stringWithFormat:@"%@", [hdrs objectForKey:hk]] forHTTPHeaderField:hk];
+                NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:rq0 completionHandler:^(NSURL *tmp, NSURLResponse *resp, NSError *err) {
                     NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 200;
                     if (err != nil) msg = [[err localizedDescription] copy];
                     else if (code < 200 || code >= 300) msg = [[NSString stringWithFormat:@"HTTP %ld", (long)code] copy];
@@ -994,7 +1043,6 @@ static RfxPluginManager *gRfxPM = nil;
                     dispatch_semaphore_signal(sem);
                 }];
                 [task resume];
-                NSString *ptitle = [it objectForKey:@"title"] ? [it objectForKey:@"title"] : @"";
                 while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC))) != 0) {
                     long long got = [task countOfBytesReceived], all = [task countOfBytesExpectedToReceive];
                     float tf = (all > 0) ? (float)((double)got / (double)all) : 0.0f;
