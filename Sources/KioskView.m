@@ -723,6 +723,18 @@ static const BOOL kBackdropFullTest = YES;
         [m_p setAllowsExternalPlayback:NO];
         [(AVPlayerLayer *)[self layer] setPlayer:m_p];
         [(AVPlayerLayer *)[self layer] setVideoGravity:AVLayerVideoGravityResizeAspectFill];
+        {   // the picture fades into black towards the bottom (where the shadow of the covers begins)
+            CAGradientLayer *gm = [CAGradientLayer layer];
+            // long, soft run-out into the black ground: eased steps (about the last 80 % of the height fade slowly)
+            static const float kLoc[8] = { 0.0f, 0.18f, 0.34f, 0.5f, 0.64f, 0.78f, 0.9f, 1.0f };
+            static const float kAl[8]  = { 1.0f, 1.0f, 0.88f, 0.66f, 0.42f, 0.2f, 0.06f, 0.0f };
+            NSMutableArray *cols = [NSMutableArray array], *locs = [NSMutableArray array];
+            for (int i = 0; i < 8; i++) { [cols addObject:(id)[[UIColor colorWithWhite:0 alpha:kAl[i]] CGColor]]; [locs addObject:[NSNumber numberWithFloat:kLoc[i]]]; }
+            gm.colors = cols; gm.locations = locs;
+            gm.startPoint = CGPointMake(0.5f, 0.0f); gm.endPoint = CGPointMake(0.5f, 1.0f);
+            gm.frame = f;
+            [[self layer] setMask:gm];
+        }
         if (dur <= 0.0) { dur = CMTimeGetSeconds([asset duration]); if (dur != dur || dur < 0) dur = 0; }
         m_s = (dur > 12.0) ? fmin(dur * 0.35, dur - 11.0) : 0.0;
         m_e = (dur > 0) ? fmin(m_s + 10.0, dur) : m_s + 10.0;
@@ -747,6 +759,11 @@ static const BOOL kBackdropFullTest = YES;
     return self;
 }
 // the picture is there: the item is ready and the excerpt has started to play
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CALayer *m = [[self layer] mask];
+    if (m != nil) { [CATransaction begin]; [CATransaction setDisableActions:YES]; [m setFrame:[self bounds]]; [CATransaction commit]; }
+}
 - (BOOL)isRunning {
     // a layer of a view with alpha 0 is not rendered, so isReadyForDisplay never turns YES for it: judge by the playback itself
     AVPlayerItem *it = [m_p currentItem];
@@ -792,7 +809,7 @@ static void SetBackdropTransparent(BOOL on) {      // the coverflow clears to tr
     RfxBDLog(on ? @"GL-Ansicht transparent" : @"GL-Ansicht wieder deckend");
     [g release];
 }
-static const CGFloat kBackdropAlpha = 0.8;
+static const CGFloat kBackdropAlpha = 0.36;       // dimmed like a projection in the background
 
 @implementation RfxBackdrop
 + (RfxBackdrop *)shared { if (gRfxBD == nil) gRfxBD = [[RfxBackdrop alloc] init]; return gRfxBD; }
@@ -820,6 +837,12 @@ static const CGFloat kBackdropAlpha = 0.8;
 - (void)attach:(RfxVideoView *)v in:(UIView *)host behind:(UIView *)ref {
     [v setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
     [v setUserInteractionEnabled:NO];
+    {   // the picture fills the upper half of the screen (aspect fill, centred in that area)
+        CGRect fr = [ref frame];
+        fr.size.height = [host bounds].size.height * 0.5f - fr.origin.y;
+        if (fr.size.height < 100.0f) fr.size.height = [host bounds].size.height * 0.5f;
+        [v setFrame:fr];
+    }
     [v setAlpha:0.01];          // not 0: a fully transparent view is not rendered, the player would not start showing frames
     RfxBDLog([NSString stringWithFormat:@"Player angelegt (Host %@, Frame %@)", NSStringFromClass([host class]), NSStringFromCGRect([v frame])]);
     [host insertSubview:v belowSubview:ref];
