@@ -7,6 +7,7 @@
 #import "TestLibrary.h"
 #import "MusicImporter.h"
 #import "GLView.h"
+#import <AVFoundation/AVFoundation.h>
 #import "KeyboardView.h"
 #import "MultichannelMixerController.h"
 #import "RadioAppDelegate.h"
@@ -670,6 +671,229 @@ static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
     if (small) [small writeToFile:[DEL BuildSmallPicpath:pic] atomically:YES];
 }
 
+
+#pragma mark - backdrop (muted music video excerpt behind the coverflow)
+
+extern UIView *gRfxBackdropGL;
+// A projection into the background: the music video that belongs to the song that plays (stream resolved by the YouTube Music plugin, muted) runs as a
+// 10 second excerpt in a loop; a new song cross-fades into the next video.  The picture sits behind the coverflow (the GL
+// view clears to transparent while it runs).  Dev menu switch "RfxDevBackdrop".
+// A video file of the user (Documents/Backdrops): the same 10 second excerpt, muted, looped, works offline.
+@interface RfxVideoView : UIView {
+    AVPlayer *m_p;
+    id m_obs;
+    double m_s, m_e;
+}
+- (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur;
+- (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur start:(double)fs;   // fs >= 0: excerpt starts there (downloaded excerpt files)
+- (BOOL)isRunning;
+- (void)stop;
+@end
+
+@implementation RfxVideoView
++ (Class)layerClass { return [AVPlayerLayer class]; }
+- (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur { return [self initWithFrame:f asset:asset duration:dur start:-1.0]; }
+- (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur start:(double)fs {
+    self = [super initWithFrame:f];
+    if (self) {
+        [self setBackgroundColor:[UIColor blackColor]];
+        AVPlayerItem *it = [AVPlayerItem playerItemWithAsset:asset];
+        m_p = [[AVPlayer playerWithPlayerItem:it] retain];
+        [m_p setMuted:YES];
+        [m_p setAllowsExternalPlayback:NO];
+        [(AVPlayerLayer *)[self layer] setPlayer:m_p];
+        [(AVPlayerLayer *)[self layer] setVideoGravity:AVLayerVideoGravityResizeAspectFill];
+        if (dur <= 0.0) { dur = CMTimeGetSeconds([asset duration]); if (dur != dur || dur < 0) dur = 0; }
+        m_s = (dur > 12.0) ? fmin(dur * 0.35, dur - 11.0) : 0.0;
+        m_e = (dur > 0) ? fmin(m_s + 10.0, dur) : m_s + 10.0;
+        if (fs >= 0.0) { m_s = fs; m_e = fs + 10.0; }       // the downloaded file holds exactly this part
+        [m_p seekToTime:CMTimeMakeWithSeconds(m_s, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        [m_p play];
+        __block RfxVideoView *me = self;
+        m_obs = [[m_p addPeriodicTimeObserverForInterval:CMTimeMake(1, 4) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
+            if (CMTimeGetSeconds(t) >= me->m_e - 0.05) {
+                [me->m_p seekToTime:CMTimeMakeWithSeconds(me->m_s, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+            }
+        }] retain];
+    }
+    return self;
+}
+// the picture is there: the item is ready and the excerpt has started to play
+- (BOOL)isRunning {
+    AVPlayerItem *it = [m_p currentItem];
+    return it != nil && [it status] == AVPlayerItemStatusReadyToPlay && [[(AVPlayerLayer *)[self layer] player] rate] > 0.0f
+        && CMTimeGetSeconds([m_p currentTime]) >= m_s - 0.1 && [(AVPlayerLayer *)[self layer] isReadyForDisplay];
+}
+- (void)stop {
+    if (m_obs != nil) { [m_p removeTimeObserver:m_obs]; [m_obs release]; m_obs = nil; }
+    [m_p pause];
+    [(AVPlayerLayer *)[self layer] setPlayer:nil];
+    [m_p release]; m_p = nil;
+}
+@end
+
+@interface RfxBackdrop : NSObject {
+    UIView *m_cur;
+    UIView *m_pending;
+    int m_gen;
+}
++ (RfxBackdrop *)shared;
+- (int)bumpGen;
+- (int)gen;
+- (void)showFile:(NSString *)path in:(UIView *)host behind:(UIView *)ref;
+- (void)showFile:(NSString *)path in:(UIView *)host behind:(UIView *)ref start:(double)fs;
+- (void)downloadURL:(NSURL *)url headers:(NSDictionary *)headers duration:(double)dur bitrate:(double)br videoId:(NSString *)vid done:(void (^)(NSString *path, double start))done;
++ (NSString *)cachedFileForVideoId:(NSString *)vid start:(double *)start;
+- (void)showURL:(NSURL *)url headers:(NSDictionary *)headers duration:(double)dur in:(UIView *)host behind:(UIView *)ref;
+- (void)clear;
+@end
+
+static RfxBackdrop *gRfxBD = nil;
+extern BOOL gRfxBackdropOn;
+static void SetBackdropTransparent(BOOL on) {      // the coverflow clears to transparent while a video runs behind it
+    gRfxBackdropOn = on;
+    UIView *g = [gRfxBackdropGL retain];
+    [[g layer] setOpaque:!on];
+    [g release];
+}
+static const CGFloat kBackdropAlpha = 0.8;
+
+@implementation RfxBackdrop
++ (RfxBackdrop *)shared { if (gRfxBD == nil) gRfxBD = [[RfxBackdrop alloc] init]; return gRfxBD; }
+- (int)bumpGen { return ++m_gen; }
+- (int)gen { return m_gen; }
+
+- (void)teardown:(UIView *)w {
+    if (w == nil) return;
+    if ([w isKindOfClass:[RfxVideoView class]]) [(RfxVideoView *)w stop];
+    [w removeFromSuperview];
+    [w release];
+}
+
+// the new picture is ready: it fades in, the old one fades out
+- (void)promote:(UIView *)w {
+    UIView *old = m_cur;
+    m_cur = m_pending; m_pending = nil;
+    SetBackdropTransparent(YES);
+    [UIView animateWithDuration:2.2 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+        [w setAlpha:kBackdropAlpha];
+        [old setAlpha:0.0];
+    } completion:^(BOOL f) { [self teardown:old]; }];
+}
+
+- (void)attach:(RfxVideoView *)v in:(UIView *)host behind:(UIView *)ref {
+    [v setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+    [v setUserInteractionEnabled:NO];
+    [v setAlpha:0.0];
+    [host insertSubview:v belowSubview:ref];
+    m_pending = v;
+    int g = m_gen;
+    __block int tries = 0;
+    __block void (^poll)(void) = nil;
+    poll = [^{
+        if (m_pending != v || m_gen != g) { [poll release]; return; }
+        if ([v isRunning]) { [self promote:v]; [poll release]; return; }
+        if (++tries > 60) { [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
+    } copy];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
+}
+
+- (void)showFile:(NSString *)path in:(UIView *)host behind:(UIView *)ref {
+    if (m_pending != nil) { [self teardown:m_pending]; m_pending = nil; }
+    AVURLAsset *as = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+    RfxVideoView *v = [[RfxVideoView alloc] initWithFrame:[ref frame] asset:as duration:0.0];
+    [self attach:v in:host behind:ref];
+}
+
+- (void)showFile:(NSString *)path in:(UIView *)host behind:(UIView *)ref start:(double)fs {
+    if (m_pending != nil) { [self teardown:m_pending]; m_pending = nil; }
+    AVURLAsset *as = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+    RfxVideoView *v = [[RfxVideoView alloc] initWithFrame:[ref frame] asset:as duration:0.0 start:fs];
+    [self attach:v in:host behind:ref];
+}
+
+// Downloaded excerpts: Caches/Backdrops/<videoId>_s<start seconds>.mp4 holds the first part of the video up to the end of the
+// 10 second excerpt (the plugin hands out a progressive mp4 whose index is at the front, so the part plays like a whole file).
++ (NSString *)backdropDir {
+    NSString *d = [[NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"Backdrops"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    return d;
+}
++ (NSString *)cachedFileForVideoId:(NSString *)vid start:(double *)start {
+    if ([vid length] == 0) return nil;
+    NSString *dir = [self backdropDir], *pre = [vid stringByAppendingString:@"_s"];
+    for (NSString *fn in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
+        if ([fn hasPrefix:pre] && [[fn pathExtension] isEqualToString:@"mp4"]) {
+            NSString *num = [[fn stringByDeletingPathExtension] substringFromIndex:[pre length]];
+            if (start) *start = [num doubleValue];
+            return [dir stringByAppendingPathComponent:fn];
+        }
+    }
+    return nil;
+}
+- (void)downloadURL:(NSURL *)url headers:(NSDictionary *)headers duration:(double)dur bitrate:(double)br videoId:(NSString *)vid done:(void (^)(NSString *, double))done {
+    double fs = (dur > 12.0) ? fmin(dur * 0.35, dur - 11.0) : 0.0;
+    if (dur <= 0.0) fs = 0.0;
+    fs = floor(fs);
+    if (br < 150000.0) br = 900000.0;
+    double bytes = (fs + 10.0 + 4.0) * br / 8.0 * 1.35 + 262144.0;            // slack for the interleaving and the peaks of the bit rate
+    if (bytes > 48.0 * 1048576.0) bytes = 48.0 * 1048576.0;
+    NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:url];
+    [rq setTimeoutInterval:40.0];
+    for (NSString *k in headers) [rq setValue:[[headers objectForKey:k] description] forHTTPHeaderField:k];
+    [rq setValue:[NSString stringWithFormat:@"bytes=0-%lld", (long long)bytes] forHTTPHeaderField:@"Range"];
+    NSString *name = [NSString stringWithFormat:@"%@_s%d.mp4", vid, (int)fs];
+    NSString *dir = [RfxBackdrop backdropDir];
+    void (^cb)(NSString *, double) = [done copy];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:rq completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
+        NSString *path = nil;
+        if (err == nil && (code == 200 || code == 206) && [data length] > 100000) {
+            NSData *head = [data subdataWithRange:NSMakeRange(0, MIN((NSUInteger)262144, [data length]))];
+            BOOL moov = [head rangeOfData:[NSData dataWithBytes:"moov" length:4] options:0 range:NSMakeRange(0, [head length])].location != NSNotFound;
+            if (moov) {
+                path = [dir stringByAppendingPathComponent:name];
+                if (![data writeToFile:path atomically:YES]) path = nil;
+            }
+        }
+        if (err != nil) NSLog(@"[backdrop] download: %@", err);
+        else if (path == nil) NSLog(@"[backdrop] download refused or without index (HTTP %d)", (int)code);
+        else {   // keep the cache small: at most 24 excerpts
+            NSArray *all = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+            if ([all count] > 24) {
+                NSMutableArray *dated = [NSMutableArray array];
+                for (NSString *fn in all) {
+                    NSDate *dt = [[[NSFileManager defaultManager] attributesOfItemAtPath:[dir stringByAppendingPathComponent:fn] error:nil] fileModificationDate];
+                    [dated addObject:[NSArray arrayWithObjects:fn, (dt ? dt : [NSDate distantPast]), nil]];
+                }
+                [dated sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [[a objectAtIndex:1] compare:[b objectAtIndex:1]]; }];
+                for (int i = 0; i < (int)[dated count] - 24; i++) [[NSFileManager defaultManager] removeItemAtPath:[dir stringByAppendingPathComponent:[[dated objectAtIndex:i] objectAtIndex:0]] error:nil];
+            }
+        }
+        cb(path, fs);
+        [cb release];
+    }] resume];
+}
+
+// a video stream that the plugin resolved (the way the plugin resolves the audio of a song)
+- (void)showURL:(NSURL *)url headers:(NSDictionary *)headers duration:(double)dur in:(UIView *)host behind:(UIView *)ref {
+    if (m_pending != nil) { [self teardown:m_pending]; m_pending = nil; }
+    NSDictionary *opt = [headers count] ? [NSDictionary dictionaryWithObject:headers forKey:@"AVURLAssetHTTPHeaderFieldsKey"] : nil;
+    AVURLAsset *as = [AVURLAsset URLAssetWithURL:url options:opt];
+    RfxVideoView *v = [[RfxVideoView alloc] initWithFrame:[ref frame] asset:as duration:dur];
+    [self attach:v in:host behind:ref];
+}
+
+- (void)clear {
+    [self bumpGen];
+    if (m_pending != nil) { [self teardown:m_pending]; m_pending = nil; }
+    UIView *old = m_cur; m_cur = nil;
+    if (old == nil) { SetBackdropTransparent(NO); return; }
+    [UIView animateWithDuration:1.2 animations:^{ [old setAlpha:0.0]; } completion:^(BOOL f) { [self teardown:old]; if (m_cur == nil && m_pending == nil) SetBackdropTransparent(NO); }];
+}
+@end
+
 @interface RfxPluginManager () {
     NSMutableDictionary *m_hosts;      // name -> RfxPluginHost (loaded)
     NSMutableSet *m_loading;
@@ -808,6 +1032,16 @@ static NSArray *RfxSortByOrder(NSArray *names) {
     try1();
 }
 
+// the music video of a song as a stream (needs the YouTube Music plugin to be loaded): done gets url, headers, duration and video id
+- (void)StreamVideoForTitle:(NSString *)title artist:(NSString *)artist videoId:(NSString *)vid done:(void (^)(NSDictionary *))done {
+    RfxPluginHost *h = [m_hosts objectForKey:@"ytmusic"];
+    if (h == nil || ([title length] == 0 && [vid length] == 0)) { done(nil); return; }
+    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:(title ? title : @""), @"title", (artist ? artist : @""), @"artist", (vid ? vid : @""), @"videoId", nil];
+    [h call:@"video.stream" params:p done:^(id r, NSString *e) {
+        if (e != nil) NSLog(@"[plugin] video.stream: %@", e);
+        done(([r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] length] > 0) ? r : nil);
+    }];
+}
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
 
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name {
@@ -2026,7 +2260,8 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         [NSArray arrayWithObjects:@"Sample-Rate-Anzeige auf dem Bildschirm", @"RfxDevRateLabel", [NSNumber numberWithInt:2], nil],
         [NSArray arrayWithObjects:@"Bit-Perfect: Lautstärke dem System überlassen", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
         [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil],
-        [NSArray arrayWithObjects:@"Beta-Look (erste Djukebox)", @"RfxDevBetaLook", [NSNumber numberWithInt:5], nil], nil];
+        [NSArray arrayWithObjects:@"Beta-Look (erste Djukebox)", @"RfxDevBetaLook", [NSNumber numberWithInt:5], nil],
+        [NSArray arrayWithObjects:@"Hintergrund: Musikvideo-Ausschnitt (eigene Clips offline)", @"RfxDevBackdrop", [NSNumber numberWithInt:6], nil], nil];
     for (NSArray *r in rows) {
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
         [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
@@ -2186,6 +2421,11 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         gRfxBetaLook = [sw isOn];
         [m_glv SetUpTippRects];
         [m_glv drawView];
+        break;
+    case 7756:
+        [d setBool:[sw isOn] forKey:@"RfxDevBackdrop"]; [d synchronize];
+        if (![sw isOn]) [[RfxBackdrop shared] clear];
+        else if ([self IsPlayingClips] && [[self m_clips] count] > 0) [self UpdateBackdropForClip:[[self m_clips] objectAtIndex:0]];
         break;
     case 7754:
         [d setBool:[sw isOn] forKey:@"RfxDevAllButtons"]; [d synchronize];
@@ -4149,8 +4389,60 @@ static void KV_PlayStatus(NSString *text) {
     [mMCMixer setOutputVolume:v];
 }
 
+- (void)UpdateBackdropForClip:(ClipObject *)c {
+    RfxBackdrop *bd = [RfxBackdrop shared];
+    if (c == nil || ![[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevBackdrop"]) { [bd clear]; return; }
+    gRfxBackdropGL = m_glv;
+    int gen = [bd bumpGen];
+    NSString *title = [c m_title] ? [c m_title] : @"", *artist = [c m_interpret] ? [c m_interpret] : @"";
+    // 1. a video of the user in Documents/Backdrops ("Artist - Title.mp4" or "Title.mp4"): works offline
+    NSString *dir = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"Backdrops"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *want1 = [[NSString stringWithFormat:@"%@ - %@", artist, title] lowercaseString], *want2 = [title lowercaseString];
+    for (NSString *fn in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
+        NSString *ext = [[fn pathExtension] lowercaseString];
+        if (![ext isEqualToString:@"mp4"] && ![ext isEqualToString:@"m4v"] && ![ext isEqualToString:@"mov"]) continue;
+        NSString *base = [[fn stringByDeletingPathExtension] lowercaseString];
+        if ([base length] > 0 && ([base isEqualToString:want1] || [base isEqualToString:want2])) {
+            [bd showFile:[dir stringByAppendingPathComponent:fn] in:self behind:m_glv];
+            return;
+        }
+    }
+    // 2. the music video from YouTube: the YouTube Music plugin resolves it, the app downloads the 10 second excerpt (like the
+    //    audio of a song) and plays that file in a loop.  The excerpt stays in the cache, so a known title starts at once.
+    NSString *key = [[NSString stringWithFormat:@"%@|%@", artist, title] lowercaseString];
+    NSDictionary *cache = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"RfxVideoIDCache"];
+    NSString *known = [cache objectForKey:key];
+    double cs = 0.0;
+    NSString *cf = [RfxBackdrop cachedFileForVideoId:known start:&cs];
+    if (cf != nil) { [bd showFile:cf in:self behind:m_glv start:cs]; return; }
+    [[RfxPluginManager shared] StreamVideoForTitle:title artist:artist videoId:known done:^(NSDictionary *r) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (r == nil) return;
+            NSString *vid = [r objectForKey:@"videoId"];
+            if ([vid length] > 0 && ![vid isEqualToString:known]) {
+                NSMutableDictionary *cd = [NSMutableDictionary dictionaryWithDictionary:[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"RfxVideoIDCache"]];
+                [cd setObject:vid forKey:key];
+                [[NSUserDefaults standardUserDefaults] setObject:cd forKey:@"RfxVideoIDCache"];
+            }
+            if ([bd gen] != gen) return;                         // another song started meanwhile
+            NSDictionary *hd = [[r objectForKey:@"headers"] isKindOfClass:[NSDictionary class]] ? [r objectForKey:@"headers"] : nil;
+            NSURL *vu = [NSURL URLWithString:[r objectForKey:@"url"]];
+            double dsec = [[r objectForKey:@"duration_ms"] doubleValue] / 1000.0;
+            [bd downloadURL:vu headers:hd duration:dsec bitrate:[[r objectForKey:@"bitrate"] doubleValue] videoId:vid done:^(NSString *path, double fs) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if ([bd gen] != gen) return;
+                    if (path != nil) [bd showFile:path in:self behind:m_glv start:fs];
+                    else [bd showURL:vu headers:hd duration:dsec in:self behind:m_glv];       // download refused: stream the excerpt instead
+                });
+            }];
+        });
+    }];
+}
+
 - (void)StartAudioPlayer:(ClipObject *)audioPlayer withAniNext:(BOOL)aniNext witharg1:(int)arg1 {
     [[RfxPluginManager shared] PlaybackStarted:audioPlayer];
+    [self UpdateBackdropForClip:audioPlayer];
     if (audioPlayer != nil) {
         [m_glv MarkClipPlayed:audioPlayer];
         if ([audioPlayer ID] > 0)
