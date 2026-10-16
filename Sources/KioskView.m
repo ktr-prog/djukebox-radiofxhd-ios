@@ -520,6 +520,33 @@ static float RfxFadeForDuration(int dur) {
 // Documents/Plugins is the one place for plugins. The app ships its plugins in the bundle (Plugins/) and copies each one
 // there on start if it is missing; existing files (your edits, keys you typed in) are never overwritten.
 // To get a fresh copy of a shipped plugin, delete its file in the Files app.
+// The values of <plugin>.txt are also written into the gaps of <plugin>.js itself (the "var NAME = ...;" lines), so the script
+// in the Files app shows what is used.  Only lines that exist in the script are changed, and only when the value differs.
+static void RfxApplyValuesToScripts(NSString *pdir) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *f in [fm contentsOfDirectoryAtPath:pdir error:nil]) {
+        if ([[f pathExtension] caseInsensitiveCompare:@"js"] != NSOrderedSame) continue;
+        NSString *pid = [f stringByDeletingPathExtension];
+        NSString *vals = RfxPluginValues(pid);
+        if ([vals length] < 3) continue;
+        NSString *jp = [pdir stringByAppendingPathComponent:f];
+        NSString *src = [NSString stringWithContentsOfFile:jp encoding:NSUTF8StringEncoding error:nil];
+        if (src == nil) continue;
+        NSString *out = src;
+        NSRegularExpression *pair = [NSRegularExpression regularExpressionWithPattern:@"^var ([A-Z0-9_]+) = (.*);$" options:NSRegularExpressionAnchorsMatchLines error:nil];
+        for (NSTextCheckingResult *m in [pair matchesInString:vals options:0 range:NSMakeRange(0, [vals length])]) {
+            NSString *key = [vals substringWithRange:[m rangeAtIndex:1]];
+            NSString *lit = [vals substringWithRange:[m rangeAtIndex:2]];
+            NSString *pat = [NSString stringWithFormat:@"^(var %@ = )(?:'(?:[^'\\\\\\n]|\\\\.)*'|\"(?:[^\"\\\\\\n]|\\\\.)*\"|[^;\\n]*);", key];
+            NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pat options:NSRegularExpressionAnchorsMatchLines error:nil];
+            if (re == nil) continue;
+            NSString *tpl = [NSString stringWithFormat:@"$1%@;", [NSRegularExpression escapedTemplateForString:lit]];
+            out = [re stringByReplacingMatchesInString:out options:0 range:NSMakeRange(0, [out length]) withTemplate:tpl];
+        }
+        if (![out isEqualToString:src]) [out writeToFile:jp atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+}
+
 static NSString *RfxPluginDir(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
     NSString *pdir = [docs stringByAppendingPathComponent:@"Plugins"];
@@ -531,6 +558,7 @@ static NSString *RfxPluginDir(void) {
         NSString *dst = [pdir stringByAppendingPathComponent:f];
         if (![fm fileExistsAtPath:dst]) [fm copyItemAtPath:[shipped stringByAppendingPathComponent:f] toPath:dst error:nil];
     }
+    RfxApplyValuesToScripts(pdir);
     return pdir;
 }
 
@@ -583,6 +611,33 @@ static NSString *RfxStreamDir(void) {
     return cached;
 }
 
+// Downloads belong to the collection that is open: Documents/Import/<collection name>/ is imported into the folder of that name (the
+// importer's rule); with no collection of the library open (radio, iPod music, nothing) they go to "Imported" as before.
+static NSString *RfxImportDir(NSString *docs) {
+    __block NSString *sub = nil;
+    void (^work)(void) = ^{
+        KioskView *kv = (KioskView *)gRfxToastHost;
+        if (![kv isKindOfClass:[KioskView class]]) return;
+        GLView *g = [kv m_glv];
+        long long fid = [g m_selectedfolderid];
+        if (fid < 199 || [g m_selectedipodid] != 0) return;          // reserved ids (radio, iPod, demo, spotify) never take downloads
+        [DEL LockDB:NO];
+        DBOperations *db = [[DBOperations alloc] init];
+        FolderObject *f = [db GetFolderForID:fid withserverid:[g m_selectedserverid] withipodid:0 withspotifyid:nil];
+        [db release];
+        [DEL UnlockDB];
+        NSString *n = [f foldername];
+        if ([n length] && [n rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/:\\"]].location == NSNotFound && ![n hasPrefix:@"."])
+            sub = [n copy];
+        [f release];
+    };
+    if ([NSThread isMainThread]) work(); else dispatch_sync(dispatch_get_main_queue(), work);
+    NSString *base = [docs stringByAppendingPathComponent:@"Import"];
+    NSString *r = (sub != nil && ![sub isEqualToString:@"Imported"]) ? [base stringByAppendingPathComponent:sub] : base;
+    [sub release];
+    return r;
+}
+
 static NSString *RfxSafeName(NSString *s) {
     NSMutableString *m = [NSMutableString stringWithString:(s != nil ? s : @"")];
     for (NSString *bad in [NSArray arrayWithObjects:@"/", @":", @"\\", @"?", @"*", @"\"", @"<", @">", @"|", nil])
@@ -596,7 +651,7 @@ static NSString *RfxSafeName(NSString *s) {
 static BOOL gRfxBarBusy = NO;
 
 // No banner any more: messages only go to the log.
-static void RfxToast(NSString *t) {
+void RfxToast(NSString *t) {
     NSLog(@"[Msg] %@", t);
 }
 
@@ -694,6 +749,63 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         [out addObject:[NSDictionary dictionaryWithObjectsAndKeys:n, @"id", pn, @"name", ([rn length] ? rn : @""), @"note", nil]];
     }
     return out;
+}
+
+// Titles of a plugin that cannot deliver audio itself (Spotify): look the same title up at the other loaded sources, in the
+// order of the provider list (Dev menu), and use the first one that finds it with about the same length and can resolve it.
+- (void)ResolveRedirect:(NSDictionary *)red fallback:(NSDictionary *)fb exclude:(NSString *)ex done:(void (^)(id, NSString *))done {
+    NSString *q = [red objectForKey:@"query"];
+    long long dur = [[red objectForKey:@"duration_ms"] respondsToSelector:@selector(longLongValue)] ? [[red objectForKey:@"duration_ms"] longLongValue] : 0;
+    NSMutableArray *cands = [NSMutableArray array];
+    for (NSString *n in RfxSortByOrder([m_hosts allKeys])) {
+        RfxPluginHost *h = [m_hosts objectForKey:n];
+        if ([n isEqualToString:ex] || ![h has:@"search"] || ![h has:@"resolve"]) continue;
+        [cands addObject:n];
+    }
+    void (^final)(NSString *) = [[^(NSString *why) {
+        if ([fb isKindOfClass:[NSDictionary class]] && [[fb objectForKey:@"url"] isKindOfClass:[NSString class]]) done(fb, nil);     // e.g. a 30 s preview
+        else done(nil, why);
+    } copy] autorelease];
+    if ([q length] == 0 || [cands count] == 0) {
+        final(@"Spotify-Titel: keine andere Quelle geladen (z. B. Qobuz oder YouTube Music unter Quellen > Autostart einschalten).");
+        return;
+    }
+    __block int idx = 0;
+    __block void (^try1)(void) = nil;
+    try1 = [^{
+        if (idx >= (int)[cands count]) {
+            final(@"Spotify-Titel: bei deinen anderen Quellen nicht gefunden.");
+            [try1 release];
+            return;
+        }
+        RfxPluginHost *h = [m_hosts objectForKey:[cands objectAtIndex:idx]];
+        NSDictionary *sp = [NSDictionary dictionaryWithObjectsAndKeys:q, @"query", [NSArray arrayWithObjects:@"track", nil], @"kinds",
+                            [NSNumber numberWithInt:0], @"offset", [NSNumber numberWithInt:6], @"limit", nil];
+        [h call:@"search" params:sp done:^(id r, NSString *e) {
+            NSDictionary *best = nil;
+            long long bestd = 0;
+            if (e == nil && [r isKindOfClass:[NSDictionary class]]) {
+                for (NSDictionary *g in [r objectForKey:@"groups"]) {
+                    if (![[g objectForKey:@"kind"] isEqualToString:@"track"]) continue;
+                    for (NSDictionary *it in [g objectForKey:@"items"]) {
+                        long long idur = [[it objectForKey:@"duration_ms"] respondsToSelector:@selector(longLongValue)] ? [[it objectForKey:@"duration_ms"] longLongValue] : 0;
+                        long long d = (dur > 0 && idur > 0) ? llabs(idur - dur) : 0;
+                        if (dur > 0 && idur > 0 && d > 12000) continue;                 // another version / a different title
+                        if (best == nil || d < bestd) { best = it; bestd = d; }
+                    }
+                }
+            }
+            if (best == nil || [best objectForKey:@"ref"] == nil) { idx++; try1(); return; }
+            NSDictionary *rp = [NSDictionary dictionaryWithObjectsAndKeys:[best objectForKey:@"ref"], @"ref", @"play", @"purpose", nil];
+            [h call:@"track.resolve" params:rp done:^(id r2, NSString *e2) {
+                if (e2 == nil && [r2 isKindOfClass:[NSDictionary class]] && [[r2 objectForKey:@"url"] isKindOfClass:[NSString class]]) {
+                    done(r2, nil);
+                    [try1 release];
+                } else { idx++; try1(); }
+            }];
+        }];
+    } copy];
+    try1();
 }
 
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
@@ -991,7 +1103,7 @@ static NSArray *RfxSortByOrder(NSArray *names) {
     long long wid = RfxItemID([job objectForKey:@"plugin"], [it objectForKey:@"ref"]);
     [wglv SetWaterForClipID:wid level:0.06f];
     NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:[it objectForKey:@"ref"], @"ref", @"play", @"purpose", nil];
-    [h call:@"track.resolve" params:p done:^(id r, NSString *e) {
+    void (^afterResolve)(id, NSString *) = [[^(id r, NSString *e) {
         NSURL *url = (e == nil && [r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] isKindOfClass:[NSString class]]) ? [NSURL URLWithString:[r objectForKey:@"url"]] : nil;
         if (url == nil) {
             RfxToast([NSString stringWithFormat:@"%@: %@", [it objectForKey:@"title"], (e ? e : @"keine Adresse")]);
@@ -1018,7 +1130,7 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
             NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-            NSString *dir = stream ? RfxStreamDir() : [docs stringByAppendingPathComponent:@"Import"];
+            NSString *dir = stream ? RfxStreamDir() : RfxImportDir(docs);
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
             NSString *ext = [[url path] pathExtension];
             if ([ext length] == 0 || [ext length] > 5) ext = [[[r objectForKey:@"format"] objectForKey:@"codec"] description];
@@ -1135,6 +1247,12 @@ static NSArray *RfxSortByOrder(NSArray *names) {
             });
             [pool release];
         });
+    } copy] autorelease];
+    // a plugin that has no audio of its own (Spotify) answers with {redirect: {query, duration_ms ...}}: the same title is looked up at the other sources
+    [h call:@"track.resolve" params:p done:^(id r0, NSString *e0) {
+        id rd0 = (e0 == nil && [r0 isKindOfClass:[NSDictionary class]]) ? [r0 objectForKey:@"redirect"] : nil;
+        if ([rd0 isKindOfClass:[NSDictionary class]]) [self ResolveRedirect:rd0 fallback:r0 exclude:[job objectForKey:@"plugin"] done:afterResolve];
+        else afterResolve(r0, e0);
     }];
 }
 
@@ -1516,6 +1634,15 @@ static NSArray *RfxSortByOrder(NSArray *names) {
     [self Say:@"Hole Stream-Adresse ..."];
     [m_host call:@"track.resolve" params:[NSDictionary dictionaryWithObjectsAndKeys:ref, @"ref", @"play", @"purpose", nil] done:^(id r, NSString *e) {
         if (e != nil) { [self Say:[NSString stringWithFormat:@"Wiedergabe: %@", e]]; return; }
+        id rd0 = [r isKindOfClass:[NSDictionary class]] ? [r objectForKey:@"redirect"] : nil;
+        if ([rd0 isKindOfClass:[NSDictionary class]]) {
+            [self Say:@"Suche bei anderen Quellen ..."];
+            [[RfxPluginManager shared] ResolveRedirect:rd0 fallback:r exclude:[m_host pluginId] done:^(id r2, NSString *e2) {
+                if (e2 != nil) { [self Say:e2]; return; }
+                [self PlayItem:it resolved:r2];
+            }];
+            return;
+        }
         [self PlayItem:it resolved:r];
     }];
 }
@@ -1541,7 +1668,7 @@ static NSArray *RfxSortByOrder(NSArray *names) {
     NSString *pid = ([m_host pluginId] != nil) ? [m_host pluginId] : @"plugin";
     // everything lands in the main "Imported" folder (files directly in Documents/Import)
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-    NSString *dir = [docs stringByAppendingPathComponent:@"Import"];
+    NSString *dir = RfxImportDir(docs);
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *hex = nil;
     unsigned long long h64 = RfxHash64([NSString stringWithFormat:@"%@|%@", pid, [it objectForKey:@"ref"]], &hex);
@@ -2420,7 +2547,7 @@ static BOOL IsSpecialFolderId(long long fid) { return fid == -66 || fid == -44 |
     if (needShuffle) { m_autoselected = YES; pick = [m_glv getNextClipObject]; }
     if (pick == nil || [pick m_folderid] == -33) {
         [pick release];
-        if (gv_kioskflag == 0)
+        if (gv_kioskflag == 0 && tries < 6)            // an empty collection (new playlist) must not keep retrying for ever
             [self performSelector:@selector(StartFirstFolderSong:) withObject:[NSNumber numberWithInt:tries + 1] afterDelay:0.3];
         return;
     }
@@ -4001,6 +4128,7 @@ static void KV_PlayStatus(NSString *text) {
     [self setM_crossfadeInitTime:-1.0];
     m_didfade = NO;
     m_spinHold = CACurrentMediaTime() + 6.0;      // the CD spins from the moment the song is started
+    [m_glv performSelectorOnMainThread:@selector(drawView) withObject:nil waitUntilDone:NO];      // the cover starts to beat together with the CD
     [self RotationFrame];
     if (audioPlayer != nil && [audioPlayer m_folderid] != -44 && !m_autoselected) {
         DBOperations *dbop = [[DBOperations alloc] init];

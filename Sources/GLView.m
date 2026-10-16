@@ -422,22 +422,35 @@ static BOOL gRfxWaterOn = NO;
 
 #pragma mark - drawing
 
-// ---- beat pulse of the playing cover ----------------------------------------------------------------
-static float gBeatPulse = 0.0f, gBeatEnv = 0.0f, gBeatAvg = 0.0f;
+// ---- beat of the playing cover ------------------------------------------------------------------------------------
+// Only strong bass hits move the cover (everything below ~78 % of the recent peak is ignored, so it does not tremble); every hit
+// picks the next of four cartoon "boombox" shapes: wide pump, tall stretch, big with a lean left, big with a lean right.  The
+// effect is live as soon as a song is playing (the same moment the small CD appears), no warm-up.
+static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatSX = 1.0f, gBeatSY = 1.0f, gBeatTilt = 0.0f;
 static double gBeatT = 0;
+static int gBeatShape = 0;
+static BOOL gBeatHeld = NO;
 static BOOL gBeatFrame = NO;           // drawIntern wants another frame although nothing else animates
 
 static void RfxBeatUpdate(BOOL playing) {
+    static const float kSX[4] = { 1.15f, 1.04f, 1.10f, 1.10f }, kSY[4] = { 1.03f, 1.15f, 1.08f, 1.08f }, kTilt[4] = { 0.0f, 0.0f, -0.09f, 0.09f };
     double now = CACurrentMediaTime();
     double dt = now - gBeatT; gBeatT = now;
     if (dt < 0.0 || dt > 0.1) dt = 0.1;
     float lvl = playing ? RfxBeatLevel() : 0.0f;
-    gBeatEnv = (lvl > gBeatEnv) ? lvl : gBeatEnv + (lvl - gBeatEnv) * (float)(1.0 - exp(-dt / 0.12));
-    gBeatAvg += (lvl - gBeatAvg) * (float)(1.0 - exp(-dt / 1.5));
-    float target = (gBeatAvg > 0.003f) ? (gBeatEnv - gBeatAvg * 1.05f) / (gBeatAvg * 0.9f + 0.01f) : 0.0f;
-    if (target < 0.0f) target = 0.0f; if (target > 1.0f) target = 1.0f;
-    gBeatPulse = (target > gBeatPulse) ? target : gBeatPulse + (target - gBeatPulse) * (float)(1.0 - exp(-dt / 0.09));
-    gBeatFrame = playing && (lvl > 0.002f || gBeatPulse > 0.004f);
+    if (lvl > gBeatPeak) gBeatPeak = lvl; else gBeatPeak *= (float)exp(-dt / 4.0);
+    if (gBeatPeak < 0.02f) gBeatPeak = 0.02f;
+    float norm = lvl / gBeatPeak, target = 0.0f;
+    if (lvl > 0.03f && norm > 0.78f) target = (norm - 0.78f) / 0.22f;
+    if (target > 1.0f) target = 1.0f;
+    if (target > 0.5f && !gBeatHeld) { gBeatHeld = YES; gBeatShape = (gBeatShape + 1) & 3; }
+    if (target < 0.2f) gBeatHeld = NO;
+    gBeatPulse = (target > gBeatPulse) ? target : gBeatPulse * (float)exp(-dt / 0.14);
+    if (gBeatPulse < 0.003f) gBeatPulse = 0.0f;
+    gBeatSX = 1.0f + (kSX[gBeatShape] - 1.0f) * gBeatPulse;
+    gBeatSY = 1.0f + (kSY[gBeatShape] - 1.0f) * gBeatPulse;
+    gBeatTilt = kTilt[gBeatShape] * gBeatPulse;
+    gBeatFrame = playing && (lvl > 0.002f || gBeatPulse > 0.0f);
 }
 
 // is this tile the title that is playing (or an album that contains it)?
@@ -593,7 +606,7 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
     int mid = (int)(offset + 0.5);
     int floorIdx = (int)offset;
     if (floorIdx > count - 1) floorIdx = count - 1;
-    if (mid != m_lastmidindex) {
+    if (mid != m_lastmidindex && !m_autospin) {
         m_lastmidindex = mid;
         [self SetLabelTexts:[NSNumber numberWithInt:mid]];
     }
@@ -782,13 +795,14 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
             ClipObject *clipForId = [[self m_tilearray] objectAtIndex:tileIdx];
             if ([clipForId ID] == m_id_to_delete) hh = hh * m_deleteexplodefactor;
             if (betaA >= 0.0) hh *= (float)betaS;
-            if (gBeatPulse > 0.001f && RfxTileIsPlaying(clipForId, playingClip)) hh *= 1.0f + 0.055f * gBeatPulse;     // the playing cover beats with the music
+            BOOL beatTile = (gBeatPulse > 0.0f && RfxTileIsPlaying(clipForId, playingClip));       // the playing cover beats with the music
             GLfloat q[12];
             memset(q, 0, sizeof(q));
-            float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
-            float yTop = hh + Yc, yBot = Yc - hh;
-            q[0] = x0; q[1] = yTop; q[2] = Zf;
-            q[3] = x1; q[4] = yTop; q[5] = Zf;
+            float bsx = beatTile ? gBeatSX : 1.0f, bsy = beatTile ? gBeatSY : 1.0f, bskew = beatTile ? gBeatTilt * hh : 0.0f;
+            float x0 = (float)(xc - (double)hh * bsx), x1 = (float)((double)hh * bsx + xc);
+            float yBot = Yc - hh, yTop = yBot + 2.0f * hh * bsy;       // the bottom edge stays on its line (the reflection hangs there)
+            q[0] = x0 + bskew; q[1] = yTop; q[2] = Zf;
+            q[3] = x1 + bskew; q[4] = yTop; q[5] = Zf;
             q[6] = x0; q[7] = yBot; q[8] = Zf;
             q[9] = x1; q[10] = yBot; q[11] = Zf;
             glVertexPointer(3, GL_FLOAT, 0, q);
@@ -935,12 +949,13 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 }
                 if ([[[self m_tilearray] objectAtIndex:tileIdx] ID] == m_id_to_delete) h28 = h28 * m_deleteexplodefactor;
                 if (betaA >= 0.0) { h28 *= (float)betaS; h30 *= (float)betaS; }
-                if (gBeatPulse > 0.001f && RfxTileIsPlaying([[self m_tilearray] objectAtIndex:tileIdx], playingClip)) { h28 *= 1.0f + 0.055f * gBeatPulse; h30 *= 1.0f + 0.055f * gBeatPulse; }
-                float x0 = (float)(xc - (double)h28), x1 = (float)((double)h28 + xc);
+                BOOL beatRefl = (gBeatPulse > 0.0f && RfxTileIsPlaying([[self m_tilearray] objectAtIndex:tileIdx], playingClip));
+                float rsx = beatRefl ? gBeatSX : 1.0f, rskew = beatRefl ? gBeatTilt * h28 : 0.0f;
+                float x0 = (float)(xc - (double)h28 * rsx), x1 = (float)((double)h28 * rsx + xc);
                 float yLow = ((-h28) - h30) + Yr;
                 float yUp = Yr - h28;
-                v[0] = x0; v[1] = yLow; v[2] = Zr;
-                v[3] = x1; v[4] = yLow; v[5] = Zr;
+                v[0] = x0 + rskew; v[1] = yLow; v[2] = Zr;
+                v[3] = x1 + rskew; v[4] = yLow; v[5] = Zr;
                 v[6] = x0; v[7] = yUp;  v[8] = Zr;
                 v[9] = x1; v[10] = yUp; v[11] = Zr;
             }
@@ -1254,7 +1269,7 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
     while (!([DEL g_end] || gv_kioskflag)) {
         if (![self LoaderMustPark]) {
             // wait until the coverflow rests
-            while (timer != nil || [self m_fingersonscreen] > 0 || [m_parent GetBlackView] != nil || [self m_pinchstatus] != 0) {
+            while (timer != nil || [self m_autospin] || [self m_fingersonscreen] > 0 || [m_parent GetBlackView] != nil || [self m_pinchstatus] != 0) {
                 if (gv_kioskflag) break;
                 if ([self LoaderMustPark]) break;
                 [NSThread sleepForTimeInterval:0.05];
@@ -1363,7 +1378,8 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
     if ([[self m_tilearray] count] != 0) {
         [self GetArrayLock:NO];
         NSMutableArray *cand = [[NSMutableArray alloc] init];
-        [cand addObjectsFromArray:[self m_tilearray]];
+        // the WHOLE folder (not the narrowed search result that is shown) is what the shuffle runs through
+        [cand addObjectsFromArray:([[self m_origarray] count] != 0 ? [self m_origarray] : [self m_tilearray])];
         [self RemoveVirtBrandingSong:cand];
         for (int i = (int)[cand count] - 1; i >= 0; i--) {
             ClipObject *c = [cand objectAtIndex:i];
@@ -1378,9 +1394,8 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
         [self RemoveQueuedFrom:cand];
         if ([cand count] == 0) {
             // everybody has been through: start a new shuffle round
-            NSString *st = [self GetSearchText];
-            if (st == nil || [st length] == 0) [m_randomarray removeAllObjects];
-            [cand addObjectsFromArray:[self m_tilearray]];
+            [m_randomarray removeAllObjects];
+            [cand addObjectsFromArray:([[self m_origarray] count] != 0 ? [self m_origarray] : [self m_tilearray])];
             [self RemoveVirtBrandingSong:cand];
             NSMutableArray *keep = [[NSMutableArray alloc] initWithArray:cand];
             [self RemoveQueuedFrom:cand];
@@ -1671,7 +1686,11 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
 // Reads the songs of p_newfolder from the database, checks their files and fills the coverflow.
 - (void)ShowFolderRest {
     long long folderid = [p_newfolder folderid];
-    [m_randomarray removeAllObjects];
+    {   // the shuffle round (who has been played) only starts over when ANOTHER folder is shown; reloading the same folder (after adding
+        // or importing songs, after a search) used to wipe it, so only the newly added songs were left to play
+        NSString *fk = [NSString stringWithFormat:@"%lld/%d/%lld/%@", folderid, (int)[p_newfolder serverid], (long long)[p_newfolder ipodid], [p_newfolder spotifyfolderid] ? [p_newfolder spotifyfolderid] : @""];
+        if (m_shufflekey == nil || ![m_shufflekey isEqualToString:fk]) { [m_randomarray removeAllObjects]; [m_shufflekey release]; m_shufflekey = [fk copy]; }
+    }
     [DEL LockDB:NO];
     DBOperations *db = [[DBOperations alloc] init];
     NSMutableArray *songs = [db GetSongsForFolder:p_newfolder withjoin:YES];
@@ -2185,7 +2204,7 @@ scroll:
         [[m_parent mMCMixer] performSelectorInBackground:@selector(StopPreplay) withObject:nil];
 }
 
-// Removes the clip m_id_to_delete from the lists, hides it in the database (the title stays on disk) and tells the overview.
+// Removes the clip m_id_to_delete from the lists, deletes it from the database and from disk and tells the overview.
 - (void)HideSongFunc:(BOOL)songFunc {
     for (int i = 0; i < 20; i++) {
         m_deleteexplodefactor = (float)((double)m_deleteexplodefactor + 0.1);
@@ -2211,9 +2230,22 @@ scroll:
     if (removed != nil) {
         [DEL LockDB:NO];
         DBOperations *db = [[DBOperations alloc] init];
-        [db HideTitle:removed];
+        // the zig-zag gesture now really deletes: database row AND the files (it only hid the title before and the file stayed)
+        [db DeleteSongFromDB:removed withServer:[m_parent m_sve]];
         [db release];
         [DEL UnlockDB];
+        NSFileManager *dfm = [NSFileManager defaultManager];
+        if (![m_parent IsClipInList:removed]) {
+            if ([removed m_filepath] != nil && [removed m_folderid] != -66) [dfm removeItemAtPath:[removed m_filepath] error:nil];
+            if ([removed m_picturepath] != nil) {
+                [dfm removeItemAtPath:[removed m_picturepath] error:nil];
+                NSString *small = [DEL BuildSmallPicpath:[removed m_picturepath]];
+                if (small != nil) [dfm removeItemAtPath:small error:nil];
+            }
+        } else {
+            [m_clipstodelete addObject:removed];      // it is in the play queue: its files go when it has left it
+        }
+        [cache removeObjectwithkey:[DEL CreateTextureKey:removed]];
         [m_mtscroller DeleteClipObject:removed];
         [removed release];
     }
@@ -2382,9 +2414,15 @@ static double gRfxLeftT0 = 0;          // when the app was left / the screen loc
     double travel = (circleAnimation * circleAnimation) / 18.0;
     if (circleAnimation < 0) travel = -travel;
     double target = floor((startOff + travel) + 0.5);
-    startSpeed = sqrt(fabs(target - startOff) * 9.0 + fabs(target - startOff) * 9.0);   // constant deceleration of 9 covers/s^2
+    // Constant deceleration like the original, but never shorter than 0.28 s: a release between two covers used to correct the
+    // position within a few frames, which looked like a jerk.  Initial speed and deceleration follow from distance and duration.
+    double dist = fabs(target - startOff);
+    double T = sqrt(2.0 * dist / 9.0);
+    if (T < 0.28) T = 0.28;
+    startSpeed = 2.0 * dist / T;
+    m_circdecel = startSpeed / T;
     if (target < startOff) startSpeed = -startSpeed;
-    runDelta = fabs(startSpeed / 9.0);
+    runDelta = T;
     startTime = CACurrentMediaTime();
     CADisplayLink *dl = [CADisplayLink displayLinkWithTarget:self selector:@selector(driveCircleAnimation)];
     [dl addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
@@ -2395,12 +2433,12 @@ static double gRfxLeftT0 = 0;          // when the app was left / the screen loc
     double t = CACurrentMediaTime() - startTime;
     if (t >= runDelta) { [self endCircleAnimation:YES]; return; }
     if ([self m_fingersonscreen] < 1) [self updateCircleAnimationAtTime:t];
-    else [self endCircleAnimation:YES];
+    else { [timer invalidate]; timer = nil; return; }      // a finger touched the turning flow: it simply carries on from where it is (no jump to a whole cover)
 }
 
 - (void)updateCircleAnimationAtTime:(double)t {
     if (runDelta < t) t = runDelta;
-    double d = fabs(startSpeed) * t + (t * 9.0 * t) * -0.5;
+    double d = fabs(startSpeed) * t - 0.5 * m_circdecel * t * t;
     if (startSpeed < 0) d = -d;
     offset = startOff + d;
     [self checkOffset];
@@ -2490,7 +2528,12 @@ static double gRfxLeftT0 = 0;          // when the app was left / the screen loc
     }
     [m_arraylock unlock];
     if (dist == -1) return;
-    [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:0] afterDelay:0.01];
+    // The title is shown at once (as in the original): the labels switch to the target title right now and stay fully visible; they used
+    // to fade out for the whole turn, change text on the way and fade in again (looked like flickering).
+    [self SetLabelTexts:[NSNumber numberWithInt:target]];
+    m_lastmidindex = target;
+    [m_titlelabel setAlpha:1.0f];
+    [m_interpretlabel setAlpha:1.0f];
     if (dist >= 21) {
         // far away: jump to 13 covers in front of the target so the animation stays short
         // (the original moved the covers in between out of the list for this, see DEVIATIONS.md)
@@ -2538,6 +2581,7 @@ static double gRfxLeftT0 = 0;          // when the app was left / the screen loc
     if (t >= 1.0) [self SpinSetOffsetFrom:m_spinStartOff moved:m_spinDist];
     { double r = floor((double)offset + 0.5); int nn = (int)[[self m_tilearray] count]; if (nn > 0 && fabs((double)offset - r) < 0.2 && [self m_fingersonscreen] == 0) { if (r >= nn) r -= nn; offset = r; } }   // snap to the cover
     [self setM_autospin:NO];
+    { int mm = (int)(offset + 0.5); int nc = (int)[[self m_tilearray] count]; if (nc > 0) { if (mm >= nc) mm = 0; [self SetLabelTexts:[NSNumber numberWithInt:mm]]; m_lastmidindex = mm; } }
     [self drawView];                      // restarts the frame chain (water, covers that are still loading)
     [self performSelector:@selector(LabelAni:) withObject:[NSNumber numberWithInt:1] afterDelay:0.01];
     [self ReInitThread];

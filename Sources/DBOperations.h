@@ -41,6 +41,7 @@
 - (int)GetLastPlayedFolder:(int)serverid withspotifyfolderid:(NSString **)spotifyfolderid;
 - (BOOL)SetFolderLastPlayed:(long long)folderid withServerID:(int)serverid withspotifyfolderid:(NSString *)spotifyfolderid;
 - (BOOL)InsertFolder:(FolderObject *)folder;
+- (long long)CreatePlaylistNamed:(NSString *)name withServerid:(int)serverid;
 - (void)DeleteDemoFolder;
 - (long long)MaxClipID;
 - (long long)MaxFolderID;

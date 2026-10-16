@@ -14,6 +14,8 @@ extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukeb
     double offset;  // +48
     CADisplayLink *m_spinLink;
     double m_spinDist, m_spinDir, m_spinStartOff, m_spinDur, m_spinT0;
+    double m_circdecel;                   // deceleration of the current fling (covers/s^2)
+    NSString *m_shufflekey;               // folder the current shuffle round belongs to
     int backingWidth;  // +56
     int backingHeight;  // +60
     float m_oglscale;  // +64

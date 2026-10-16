@@ -1405,9 +1405,9 @@ static UIImage *SRBadge(NSString *glyph, UIColor *color) {
 - (CGRect)GetTextfieldFrame:(CGSize)textfieldFrame {
     CGRect kb = [m_keyboardpic frame];
     if (textfieldFrame.width <= textfieldFrame.height) {
-        return CGRectMake(kb.origin.x + 202.0f, kb.origin.y + 13.0f, 137.0f, 26.0f);
+        return CGRectMake(kb.origin.x + 150.0f, kb.origin.y + 13.0f, 189.0f, 26.0f);       // wider search field (grows to the left, the right edge stays)
     }
-    return CGRectMake(kb.origin.x + 357.0f, kb.origin.y + 14.0f, 137.0f, 26.0f);
+    return CGRectMake(kb.origin.x + 262.0f, kb.origin.y + 14.0f, 232.0f, 26.0f);
 }
 
 - (CGRect)GetVolOverlayFrame:(CGSize)volOverlayFrame {

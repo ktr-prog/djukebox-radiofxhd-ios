@@ -215,6 +215,7 @@
                 FolderObject *f = [folders objectAtIndex:i];
                 if ([f folderid] == -33) continue;
                 if ([f folderid] == -44) continue;
+                if (([f flags] & 0x10000) != 0) continue;           // a playlist the user created is shown while it is still empty
                 if ([self IsFolderEmpty:f withServerID:[f serverid]])
                     [folders removeObjectAtIndex:i];
             }
@@ -373,6 +374,23 @@
         [self dbClose];
     }
     return ok;
+}
+
+// Creates a playlist ("Sammlung" the user makes): a library folder with the flag 0x10000.  Returns its folder id, -1 on failure / same name exists.
+- (long long)CreatePlaylistNamed:(NSString *)name withServerid:(int)serverid {
+    if ([name length] == 0) return -1;
+    if ([self FolderIDForName:name serverid:serverid] >= 0) return -1;
+    long long next = [self MaxFolderID];
+    if (next < 199) next = 199;
+    FolderObject *f = [[FolderObject alloc] init];
+    [f setFoldername:name];
+    [f setServerid:serverid];
+    [f setFolderid:next + 1];
+    [f setFlags:0x10000];
+    BOOL ok = [self InsertFolder:f];
+    long long fid = ok ? [f folderid] : -1;
+    [f release];
+    return fid;
 }
 
 - (BOOL)UpdateFolder:(FolderObject *)folder withServerid:(int)serverid {

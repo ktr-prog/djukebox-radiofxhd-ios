@@ -11,6 +11,7 @@
 #import "RadioAppDelegate.h"
 
 #define DEL ((RadioAppDelegate *)[[UIApplication sharedApplication] delegate])
+extern void RfxToast(NSString *text);
 
 // The shrink / grow animations draw their steps in a loop; without a pause the steps flew by in a few milliseconds and the
 // transition looked like a jump.  One step now lasts about one display frame and a bit.
@@ -266,6 +267,7 @@ static void RfxPinchPause(double sec) { CFRunLoopRunInMode(kCFRunLoopDefaultMode
 
 - (void)PinchAni1DidStop {
     [self setM_pinchstatus:2];
+    [self ShowPlaylistButton];
     if ([self m_selectedfolderid] != -33)
         [m_mtscroller SetPicreplaced];
     else
@@ -283,6 +285,7 @@ static void RfxPinchPause(double sec) { CFRunLoopRunInMode(kCFRunLoopDefaultMode
 
 // Overview -> flow (a folder was chosen in the overview, or none: back to the old one).
 - (void)PinchAniBack {
+    [[self viewWithTag:7871] removeFromSuperview];
     MTObject *obj = nil;
     int count = 0;
     if (m_newselectedfolderindex != -1) {
@@ -365,6 +368,45 @@ static void RfxPinchPause(double sec) { CFRunLoopRunInMode(kCFRunLoopDefaultMode
     [self setM_pinchstatus:0];
     [self setM_fingersonscreen:0];
     [self ExecuteServerFlags:[NSNumber numberWithInt:1]];
+}
+
+// ---- playlists: the "+" button of the collections view ----------------------------------------------------------------
+- (void)ShowPlaylistButton {
+    if ([self viewWithTag:7871] != nil) return;
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTag:7871];
+    [b setFrame:CGRectMake(24.0f, 70.0f, 190.0f, 40.0f)];
+    [b setTitle:@"+ Neue Playlist" forState:UIControlStateNormal];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [[b titleLabel] setFont:[UIFont systemFontOfSize:18.0f]];
+    [b setBackgroundColor:[UIColor colorWithWhite:0.18f alpha:0.9f]];
+    [[b layer] setCornerRadius:8.0f];
+    [b addTarget:self action:@selector(AskNewPlaylist) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:b];
+}
+
+- (void)AskNewPlaylist {
+    UIViewController *top = [[[UIApplication sharedApplication] keyWindow] rootViewController];
+    while ([top presentedViewController] != nil) top = [top presentedViewController];
+    if (top == nil) return;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Neue Playlist"
+        message:@"Titel, die du bei dieser Sammlung herunterlädst, landen in ihr, sobald du sie öffnest." preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) { [tf setPlaceholder:@"Name"]; [tf setAutocapitalizationType:UITextAutocapitalizationTypeSentences]; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Abbrechen" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Anlegen" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        NSString *name = [[[[ac textFields] objectAtIndex:0] text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        for (NSString *bad in [NSArray arrayWithObjects:@"/", @":", @"\\", nil]) name = [name stringByReplacingOccurrencesOfString:bad withString:@"-"];
+        if ([name length] == 0) return;
+        [DEL LockDB:NO];
+        DBOperations *db = [[DBOperations alloc] init];
+        long long fid = [db CreatePlaylistNamed:name withServerid:[[m_parent m_sve] serverid]];
+        [db release];
+        [DEL UnlockDB];
+        if (fid < 0) { RfxToast(@"Diesen Namen gibt es schon."); return; }
+        RfxToast([NSString stringWithFormat:@"Playlist \"%@\" angelegt.", name]);
+        [self ReLoadScrollerDelayed];
+    }]];
+    [top presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)HelperFuncLoadFolder:(FolderObject *)folder {
