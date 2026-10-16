@@ -423,11 +423,11 @@ static BOOL gRfxWaterOn = NO;
 #pragma mark - drawing
 
 // ---- light on the playing cover -----------------------------------------------------------------------------------
-// Like the Just Dance menu: the cover does not move or change shape, it only gets a light.  A real onset detector (the bass peak
-// jumps above its own short-term average) fires the light at full strength, which then fades out within ~0.2 s; between the hits a
-// faint glow marks the playing cover.  The peaks come from the audio thread as "loudest since the last frame", so no hit is missed.
-static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatAvg = 0.0f;
-static double gBeatT = 0, gBeatLast = 0;
+// Fluent, no flashing: the cover itself stays still.  A soft aurora hangs around it: its colour slowly drifts through the
+// spectrum and a bright spot of light runs around the frame; the louder the bass, the brighter and wider the glow and the faster
+// the spot travels.  Everything is eased (quick to rise, slow to fall) so it flows with the music instead of blinking.
+static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatOrbit = 0.0f, gBeatHue = 0.0f;
+static double gBeatT = 0;
 static BOOL gBeatFrame = NO;           // drawIntern wants another frame although nothing else animates
 
 static void RfxBeatUpdate(BOOL playing) {
@@ -435,22 +435,32 @@ static void RfxBeatUpdate(BOOL playing) {
     double dt = now - gBeatT; gBeatT = now;
     if (dt < 0.0 || dt > 0.1) dt = 0.1;
     float lvl = RfxBeatTake();
-    if (!playing) { gBeatPulse = 0.0f; gBeatAvg = 0.0f; gBeatFrame = NO; return; }
+    if (!playing) { gBeatPulse = 0.0f; gBeatFrame = NO; return; }
     if (lvl > gBeatPeak) gBeatPeak = lvl; else gBeatPeak *= (float)exp(-dt / 5.0);
     if (gBeatPeak < 0.02f) gBeatPeak = 0.02f;
-    // onset: clearly above the recent average and not tiny compared with the recent peak, at most ~8 hits per second
-    if (lvl > 0.03f && lvl > gBeatAvg * 1.4f && lvl > gBeatPeak * 0.45f && now - gBeatLast > 0.12) {
-        float strength = lvl / gBeatPeak;
-        if (strength > 1.0f) strength = 1.0f;
-        float t = 0.55f + 0.45f * strength;
-        if (t > gBeatPulse) gBeatPulse = t;
-        gBeatLast = now;
-    } else {
-        gBeatPulse *= (float)exp(-dt / 0.16);
+    float norm = lvl / gBeatPeak;
+    float target = norm * norm;                       // quiet parts stay calm, hits stand out
+    float tau = (target > gBeatPulse) ? 0.07f : 0.38f;
+    gBeatPulse += (target - gBeatPulse) * (float)(1.0 - exp(-dt / tau));
+    if (gBeatPulse < 0.003f) gBeatPulse = 0.0f;
+    gBeatOrbit += (float)dt * (0.10f + 0.55f * gBeatPulse);
+    if (gBeatOrbit > 1.0f) gBeatOrbit -= 1.0f;
+    gBeatHue += (float)dt * 0.025f;
+    if (gBeatHue > 1.0f) gBeatHue -= 1.0f;
+    gBeatFrame = YES;
+}
+
+static void RfxHSV(float h, float s, float v, float *r, float *g, float *b) {
+    h = h - floorf(h);
+    float hh = h * 6.0f, f = hh - floorf(hh), p = v * (1.0f - s), q = v * (1.0f - s * f), t = v * (1.0f - s * (1.0f - f));
+    switch ((int)hh % 6) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        default: *r = v; *g = p; *b = q; break;
     }
-    if (gBeatPulse < 0.004f) gBeatPulse = 0.0f;
-    gBeatAvg += (lvl - gBeatAvg) * (float)(1.0 - exp(-dt / 0.35));
-    gBeatFrame = YES;                  // keep the faint glow and the fade alive while the song plays
 }
 
 // is this tile the title that is playing (or an album that contains it)?
@@ -892,21 +902,31 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
                 again = YES;                     // keep drawing frames while the water moves
             }
-            // Light on the playing cover (additive): a soft halo around the edge plus a faint brightening of the cover itself
+            // Aurora around the playing cover (additive): 8 points around the frame, each with its own hue and a travelling bright spot
             if (beatTile && !(gRfxWaterOn && [clipForId ID] == gRfxWaterID) && [tile percent] > 99) {
-                float gl = 0.10f + 0.90f * gBeatPulse;
-                float ga = gl * (float)alpha;
-                float ext = hh * (0.10f + 0.30f * gBeatPulse);
+                float en = gBeatPulse;
+                float ga = (0.22f + 0.78f * en) * (float)alpha;
+                float ext = hh * (0.08f + 0.20f * en);
                 float zg = Zf + 0.02f;
-                GLfloat gv[10 * 3], gc[10 * 4];
-                float ox[4] = { x0 - ext, x1 + ext, x1 + ext, x0 - ext }, oy[4] = { yTop + ext, yTop + ext, yBot - ext, yBot - ext };
-                float ix[4] = { x0, x1, x1, x0 }, iy[4] = { yTop, yTop, yBot, yBot };
-                for (int k = 0; k < 5; k++) {
-                    int c = k & 3;
+                enum { GN = 9 };
+                GLfloat gv[GN * 2 * 3], gc[GN * 2 * 4];
+                float ix[8] = { x0, (x0 + x1) * 0.5f, x1, x1, x1, (x0 + x1) * 0.5f, x0, x0 };
+                float iy[8] = { yTop, yTop, yTop, (yTop + yBot) * 0.5f, yBot, yBot, yBot, (yTop + yBot) * 0.5f };
+                float ox[8] = { x0 - ext, (x0 + x1) * 0.5f, x1 + ext, x1 + ext, x1 + ext, (x0 + x1) * 0.5f, x0 - ext, x0 - ext };
+                float oy[8] = { yTop + ext, yTop + ext, yTop + ext, (yTop + yBot) * 0.5f, yBot - ext, yBot - ext, yBot - ext, (yTop + yBot) * 0.5f };
+                for (int k = 0; k < GN; k++) {
+                    int c = k & 7;
+                    float pos = (float)c / 8.0f;
+                    float d = pos - gBeatOrbit; d -= floorf(d);
+                    float spot = 0.5f + 0.5f * cosf(d * 6.2831853f);          // 1 at the spot, 0 opposite
+                    spot = spot * spot * spot;
+                    float a = ga * (0.35f + 0.65f * spot);
+                    float cr, cg, cb;
+                    RfxHSV(gBeatHue + pos * 0.5f, 0.55f - 0.25f * spot, 1.0f, &cr, &cg, &cb);
                     gv[(k * 2) * 3 + 0] = ox[c]; gv[(k * 2) * 3 + 1] = oy[c]; gv[(k * 2) * 3 + 2] = zg;
                     gv[(k * 2 + 1) * 3 + 0] = ix[c]; gv[(k * 2 + 1) * 3 + 1] = iy[c]; gv[(k * 2 + 1) * 3 + 2] = zg;
-                    gc[(k * 2) * 4 + 0] = 1.0f; gc[(k * 2) * 4 + 1] = 0.96f; gc[(k * 2) * 4 + 2] = 0.86f; gc[(k * 2) * 4 + 3] = 0.0f;
-                    gc[(k * 2 + 1) * 4 + 0] = 1.0f; gc[(k * 2 + 1) * 4 + 1] = 0.96f; gc[(k * 2 + 1) * 4 + 2] = 0.86f; gc[(k * 2 + 1) * 4 + 3] = ga * 0.85f;
+                    gc[(k * 2) * 4 + 0] = cr; gc[(k * 2) * 4 + 1] = cg; gc[(k * 2) * 4 + 2] = cb; gc[(k * 2) * 4 + 3] = 0.0f;
+                    gc[(k * 2 + 1) * 4 + 0] = cr; gc[(k * 2 + 1) * 4 + 1] = cg; gc[(k * 2 + 1) * 4 + 2] = cb; gc[(k * 2 + 1) * 4 + 3] = a * 0.8f;
                 }
                 glDisable(GL_TEXTURE_2D);
                 glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -914,15 +934,9 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE);
                 glVertexPointer(3, GL_FLOAT, 0, gv);
                 glColorPointer(4, GL_FLOAT, 0, gc);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 10);
-                // the cover itself gets lighter
-                GLfloat ov[12] = { x0, yTop, zg, x1, yTop, zg, x0, yBot, zg, x1, yBot, zg };
-                GLfloat oc[16];
-                for (int k = 0; k < 4; k++) { oc[k * 4 + 0] = 1.0f; oc[k * 4 + 1] = 0.97f; oc[k * 4 + 2] = 0.88f; oc[k * 4 + 3] = ga * 0.30f; }
-                glVertexPointer(3, GL_FLOAT, 0, ov);
-                glColorPointer(4, GL_FLOAT, 0, oc);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, GN * 2);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glColorPointer(4, GL_FLOAT, 0, m_colors);        // never leave a pointer to a stack array behind
                 glEnableClientState(GL_TEXTURE_COORD_ARRAY);
                 glEnable(GL_TEXTURE_2D);
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
