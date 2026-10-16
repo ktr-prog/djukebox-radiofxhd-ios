@@ -6,6 +6,9 @@
 #import <OpenGLES/ES1/glext.h>
 #import <QuartzCore/QuartzCore.h>
 
+extern int gRfxBeatFX;            // dev menu: effect of the playing cover
+NSString *RfxBeatFXName(int i);
+int RfxBeatFXCount(void);
 extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukebox
 
 @class CGPointObject, ClipObject, DataCache, FlowCoverRecord, FolderObject, KeyboardView, KioskView, MTScroller, RegisterImage;

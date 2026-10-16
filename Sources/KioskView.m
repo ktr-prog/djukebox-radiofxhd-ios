@@ -2071,6 +2071,28 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         [sv addSubview:sl]; [sl release];
         y += 46.0f;
     }
+    {   // effect of the playing cover: < name >
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, 150.0f, 31.0f)];
+        [l setText:@"Cover-Effekt"]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
+        [l setFont:[UIFont systemFontOfSize:19.0f]];
+        [sv addSubview:l]; [l release];
+        UIButton *pb = [UIButton buttonWithType:UIButtonTypeSystem];
+        [pb setFrame:CGRectMake(cx - rowW * 0.5f + 150.0f, y - 3.0f, 44.0f, 37.0f)];
+        [pb setTitle:@"\u25C0" forState:UIControlStateNormal]; [pb setTag:7776];
+        [pb addTarget:self action:@selector(DevFXStep:) forControlEvents:UIControlEventTouchUpInside];
+        [sv addSubview:pb];
+        UILabel *nm = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f + 194.0f, y, rowW - 194.0f - 44.0f, 31.0f)];
+        [nm setTag:7775]; [nm setText:RfxBeatFXName(gRfxBeatFX)]; [nm setTextColor:[UIColor colorWithRed:0.55f green:0.85f blue:1.0f alpha:1.0f]];
+        [nm setBackgroundColor:[UIColor clearColor]]; [nm setFont:[UIFont systemFontOfSize:17.0f]]; [nm setTextAlignment:NSTextAlignmentCenter];
+        [nm setAdjustsFontSizeToFitWidth:YES];
+        [sv addSubview:nm]; [nm release];
+        UIButton *nb = [UIButton buttonWithType:UIButtonTypeSystem];
+        [nb setFrame:CGRectMake(cx + rowW * 0.5f - 44.0f, y - 3.0f, 44.0f, 37.0f)];
+        [nb setTitle:@"\u25B6" forState:UIControlStateNormal]; [nb setTag:7777];
+        [nb addTarget:self action:@selector(DevFXStep:) forControlEvents:UIControlEventTouchUpInside];
+        [sv addSubview:nb];
+        y += 46.0f;
+    }
     {
         NSArray *names = [[RfxPluginManager shared] AllNames];
         UILabel *h = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y + 8.0f, rowW, 26.0f)];
@@ -2171,6 +2193,15 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         break;
     }
     [self bringSubviewToFront:[self viewWithTag:7741]];
+}
+
+- (void)DevFXStep:(UIButton *)bt {
+    int n = RfxBeatFXCount();
+    gRfxBeatFX = (gRfxBeatFX + ([bt tag] == 7777 ? 1 : n - 1)) % n;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setInteger:gRfxBeatFX forKey:@"RfxDevBeatFX"]; [d synchronize];
+    UILabel *nm = (UILabel *)[[self viewWithTag:7741] viewWithTag:7775];
+    [nm setText:RfxBeatFXName(gRfxBeatFX)];
 }
 
 - (void)DevSliderMoved:(UISlider *)sl {

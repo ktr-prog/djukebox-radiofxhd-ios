@@ -204,6 +204,7 @@ static BOOL gRfxWaterOn = NO;
     offset = 0;
     m_flipping = NO;
     gRfxBetaLook = [[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevBetaLook"];
+    { id fxp = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevBeatFX"]; if (fxp) gRfxBeatFX = [fxp intValue]; }
     m_anglediff = 14.583333333333334;           // 0x402CAAAAAAAAAAAB
     cache = [[DataCache alloc] initWithCapacity:0x6e];
     [cache SetGLPointer:self];
@@ -422,32 +423,106 @@ static BOOL gRfxWaterOn = NO;
 
 #pragma mark - drawing
 
-// ---- light on the playing cover -----------------------------------------------------------------------------------
-// Fluent, no flashing: the cover itself stays still.  A soft aurora hangs around it: its colour slowly drifts through the
-// spectrum and a bright spot of light runs around the frame; the louder the bass, the brighter and wider the glow and the faster
-// the spot travels.  Everything is eased (quick to rise, slow to fall) so it flows with the music instead of blinking.
-static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatOrbit = 0.0f, gBeatHue = 0.0f;
-static double gBeatT = 0;
+// ---- effects of the playing cover ---------------------------------------------------------------------------------
+// The cover can get light (aurora, halo, neon frame, ripples, spotlight, marquee, equalizer, colour wash) and/or movement (pulse,
+// pendulum, bounce, jelly, heartbeat, float).  Chosen in the dev menu (RfxDevBeatFX).  Nothing flashes: levels are eased, the
+// movements are driven by damped springs that are kicked by detected beats, so they overshoot and settle like real objects.
+int gRfxBeatFX = 1;
+enum { kFXCount = 16 };
+NSString *RfxBeatFXName(int i) {
+    static NSString *n[kFXCount] = {
+        @"Aus", @"Aurora (Licht)", @"Halo (Licht)", @"Neon-Rahmen (Licht)", @"Lichtwellen (Licht)", @"Scheinwerfer (Licht)",
+        @"Lauflicht (Licht)", @"Equalizer (Licht)", @"Farbwäsche (Licht)", @"Puls (Bewegung)", @"Pendel (Bewegung)",
+        @"Hüpfen (Bewegung)", @"Gummi (Bewegung)", @"Herzschlag (Bewegung)", @"Schweben (Bewegung)", @"Party (Aurora + Pendel + Puls)" };
+    return n[(i < 0 || i >= kFXCount) ? 0 : i];
+}
+int RfxBeatFXCount(void) { return kFXCount; }
+
+static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatOrbit = 0.0f, gBeatHue = 0.0f, gBeatHit = 0.0f, gBeatAvg = 0.0f, gBeatClock = 0.0f;
+static float gSpr = 0.0f, gSprV = 0.0f, gSprSign = 1.0f, gSpr2 = 0.0f, gSpr2V = 0.0f, gWaves[4] = { -1, -1, -1, -1 }, gWaveStr[4];
+static double gBeatT = 0, gBeatLast = 0, gBeatPending = 0;
 static BOOL gBeatFrame = NO;           // drawIntern wants another frame although nothing else animates
+static BOOL gFXMove = NO;              // the effect moves the cover
+static int gFXLight = 0;               // 0 = no light, else the light effect (1..8)
+static float gFXsx = 1.0f, gFXsy = 1.0f, gFXrot = 0.0f, gFXdy = 0.0f;
+static float gXfC = 1.0f, gXfS = 0.0f, gXfSX = 1.0f, gXfSY = 1.0f, gXfDY = 0.0f, gXfPX = 0.0f, gXfPY = 0.0f;
+
+static void RfxSpring(float *x, float *v, double dt) {
+    int n = (int)(dt / 0.004) + 1;
+    float h = (float)(dt / n);
+    for (int i = 0; i < n; i++) { *v += (-140.0f * *x - 12.0f * *v) * h; *x += *v * h; }
+}
 
 static void RfxBeatUpdate(BOOL playing) {
+    static BOOL loaded = NO;
+    if (!loaded) { loaded = YES; id p = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevBeatFX"]; if (p) gRfxBeatFX = [p intValue]; }
+    int fx = gRfxBeatFX;
     double now = CACurrentMediaTime();
     double dt = now - gBeatT; gBeatT = now;
     if (dt < 0.0 || dt > 0.1) dt = 0.1;
     float lvl = RfxBeatTake();
-    if (!playing) { gBeatPulse = 0.0f; gBeatFrame = NO; return; }
+    gFXMove = (fx >= 9 && fx <= 15);
+    gFXLight = (fx >= 1 && fx <= 8) ? fx : (fx == 15 ? 1 : 0);
+    if (!playing || fx == 0) {
+        gBeatPulse = gBeatHit = gSpr = gSprV = gSpr2 = gSpr2V = 0.0f; gBeatFrame = NO;
+        for (int i = 0; i < 4; i++) gWaves[i] = -1;
+        return;
+    }
     if (lvl > gBeatPeak) gBeatPeak = lvl; else gBeatPeak *= (float)exp(-dt / 5.0);
     if (gBeatPeak < 0.02f) gBeatPeak = 0.02f;
     float norm = lvl / gBeatPeak;
-    float target = norm * norm;                       // quiet parts stay calm, hits stand out
+    float target = norm * norm;
     float tau = (target > gBeatPulse) ? 0.07f : 0.38f;
     gBeatPulse += (target - gBeatPulse) * (float)(1.0 - exp(-dt / tau));
     if (gBeatPulse < 0.003f) gBeatPulse = 0.0f;
+    // onset: the bass peak jumps clearly above its recent average (at most ~8 per second)
+    if (lvl > 0.03f && lvl > gBeatAvg * 1.4f && lvl > gBeatPeak * 0.45f && now - gBeatLast > 0.12) {
+        float st = lvl / gBeatPeak; if (st > 1.0f) st = 1.0f;
+        gBeatHit = 0.55f + 0.45f * st;
+        gSprV += gSprSign * (10.0f + 4.0f * st);
+        gSpr2V += (10.0f + 4.0f * st);
+        gSprSign = -gSprSign;
+        if (fx == 13) gBeatPending = now + 0.19;
+        for (int i = 0; i < 4; i++) if (gWaves[i] < 0.0f || gWaves[i] >= 1.0f) { gWaves[i] = 0.0f; gWaveStr[i] = st; break; }
+        gBeatLast = now;
+    }
+    if (gBeatPending > 0.0 && now >= gBeatPending) { gBeatPending = 0.0; gSpr2V += 8.0f; }
+    gBeatAvg += (lvl - gBeatAvg) * (float)(1.0 - exp(-dt / 0.35));
+    gBeatHit *= (float)exp(-dt / 0.18);
+    if (gBeatHit < 0.004f) gBeatHit = 0.0f;
+    RfxSpring(&gSpr, &gSprV, dt);
+    RfxSpring(&gSpr2, &gSpr2V, dt);
+    for (int i = 0; i < 4; i++) if (gWaves[i] >= 0.0f && gWaves[i] < 1.0f) gWaves[i] += (float)dt / 0.9f;
+    gBeatClock += (float)dt;
     gBeatOrbit += (float)dt * (0.10f + 0.55f * gBeatPulse);
     if (gBeatOrbit > 1.0f) gBeatOrbit -= 1.0f;
     gBeatHue += (float)dt * 0.025f;
     if (gBeatHue > 1.0f) gBeatHue -= 1.0f;
+    // movement (sx, sy: scale, rot: radians, dy: lift in half cover heights)
+    gFXsx = gFXsy = 1.0f; gFXrot = 0.0f; gFXdy = 0.0f;
+    float e = gBeatPulse;
+    switch (fx) {
+    case 9:  gFXsx = gFXsy = 1.0f + 0.07f * gSpr2; break;
+    case 10: gFXrot = 0.11f * gSpr; break;
+    case 11: gFXdy = 0.14f * fmaxf(gSpr2, -0.15f); break;
+    case 12: gFXsx = 1.0f + 0.10f * gSpr2; gFXsy = 1.0f - 0.10f * gSpr2; break;
+    case 13: gFXsx = gFXsy = 1.0f + 0.08f * gSpr2; break;
+    case 14: gFXdy = (0.03f + 0.05f * e) * sinf(gBeatClock * 1.6f); gFXrot = 0.03f * sinf(gBeatClock * 1.1f); gFXsx = gFXsy = 1.0f + 0.02f * e; break;
+    case 15: gFXrot = 0.07f * gSpr; gFXsx = gFXsy = 1.0f + 0.04f * gSpr2; break;
+    }
     gBeatFrame = YES;
+}
+
+// transform of the moving cover: scale and rotate around (px, py), lift by dy*hh.  mirror: the reflection leans the other way.
+static void RfxXfBegin(BOOL on, float px, float py, float hh, BOOL mirror) {
+    if (!on) { gXfC = 1.0f; gXfS = 0.0f; gXfSX = gXfSY = 1.0f; gXfDY = 0.0f; gXfPX = px; gXfPY = py; return; }
+    float r = mirror ? -gFXrot : gFXrot;
+    gXfC = cosf(r); gXfS = sinf(r); gXfSX = gFXsx; gXfSY = gFXsy; gXfDY = gFXdy * hh; gXfPX = px; gXfPY = py;
+}
+static void RfxXf(float *x, float *y) {
+    float dx = (*x - gXfPX) * gXfSX, dy = (*y - gXfPY) * gXfSY;
+    *x = gXfPX + dx * gXfC - dy * gXfS;
+    *y = gXfPY + dx * gXfS + dy * gXfC + gXfDY;
 }
 
 static void RfxHSV(float h, float s, float v, float *r, float *g, float *b) {
@@ -461,6 +536,185 @@ static void RfxHSV(float h, float s, float v, float *r, float *g, float *b) {
         case 4: *r = t; *g = p; *b = v; break;
         default: *r = v; *g = p; *b = q; break;
     }
+}
+
+// look of the current ring: alpha runs from a0 (inner edge) to a1 (outer edge), the hue along the frame, an optional travelling spot
+static struct { float a0, a1, hue0, hueSpan, sat, spot; } gL;
+static void RfxRingCol(float t, float rad, GLfloat *c) {
+    float a = gL.a0 + (gL.a1 - gL.a0) * rad;
+    if (gL.spot > 0.0f) {
+        float d = t - gBeatOrbit; d -= floorf(d);
+        float sp = 0.5f + 0.5f * cosf(d * 6.2831853f); sp = sp * sp * sp;
+        a *= (1.0f - gL.spot) + gL.spot * sp;
+    }
+    RfxHSV(gL.hue0 + t * gL.hueSpan, gL.sat, 1.0f, &c[0], &c[1], &c[2]);
+    c[3] = a;
+}
+
+static void RfxPerim(float t, float x0, float x1, float yBot, float yTop, float *px, float *py, float *nx, float *ny) {
+    float w = x1 - x0, h = yTop - yBot;
+    t = t - floorf(t);
+    int e = (int)(t * 4.0f); if (e > 3) e = 3;
+    float u = t * 4.0f - (float)e;
+    switch (e) {
+    case 0: *px = x0 + u * w; *py = yTop; *nx = 0; *ny = 1; break;
+    case 1: *px = x1; *py = yTop - u * h; *nx = 1; *ny = 0; break;
+    case 2: *px = x1 - u * w; *py = yBot; *nx = 0; *ny = -1; break;
+    default: *px = x0; *py = yBot + u * h; *nx = -1; *ny = 0; break;
+    }
+}
+
+// a band around the cover from rIn to rOut (offsets away from the edge, negative = inside), coloured through gL
+static void RfxRing(float x0, float x1, float yBot, float yTop, float zg, float rIn, float rOut) {
+    enum { S = 10 };
+    GLfloat v[(S + 1) * 2 * 3], c[(S + 1) * 2 * 4];
+    float w = x1 - x0, h = yTop - yBot;
+    float ext = fmaxf(fmaxf(rIn, rOut), 0.0f);
+    for (int e = 0; e < 4; e++) {
+        float tx = (e == 0) ? 1.0f : (e == 2 ? -1.0f : 0.0f), ty = (e == 1) ? -1.0f : (e == 3 ? 1.0f : 0.0f);
+        for (int i = 0; i <= S; i++) {
+            float u = (float)i / (float)S, px, py, nx = 0.0f, ny = 0.0f;
+            switch (e) {
+            case 0: px = x0 + u * w; py = yTop; ny = 1.0f; break;
+            case 1: px = x1; py = yTop - u * h; nx = 1.0f; break;
+            case 2: px = x1 - u * w; py = yBot; ny = -1.0f; break;
+            default: px = x0; py = yBot + u * h; nx = -1.0f; break;
+            }
+            float sx = (i == 0) ? -ext : (i == S ? ext : 0.0f);
+            float ix = px + nx * rIn + tx * sx, iy = py + ny * rIn + ty * sx;
+            float ox = px + nx * rOut + tx * sx, oy = py + ny * rOut + ty * sx;
+            RfxXf(&ix, &iy); RfxXf(&ox, &oy);
+            v[(i * 2) * 3 + 0] = ix; v[(i * 2) * 3 + 1] = iy; v[(i * 2) * 3 + 2] = zg;
+            v[(i * 2 + 1) * 3 + 0] = ox; v[(i * 2 + 1) * 3 + 1] = oy; v[(i * 2 + 1) * 3 + 2] = zg;
+            float t = (e + u) * 0.25f;
+            RfxRingCol(t, 0.0f, &c[(i * 2) * 4]);
+            RfxRingCol(t, 1.0f, &c[(i * 2 + 1) * 4]);
+        }
+        glVertexPointer(3, GL_FLOAT, 0, v);
+        glColorPointer(4, GL_FLOAT, 0, c);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, (S + 1) * 2);
+    }
+}
+
+// one coloured quad (4 corners given as pairs), transformed with the cover
+static void RfxQuad(const float *xy, const GLfloat *rgba, float zg) {
+    GLfloat v[12], c[16];
+    for (int k = 0; k < 4; k++) {
+        float x = xy[k * 2], y = xy[k * 2 + 1];
+        RfxXf(&x, &y);
+        v[k * 3] = x; v[k * 3 + 1] = y; v[k * 3 + 2] = zg;
+        for (int q = 0; q < 4; q++) c[k * 4 + q] = rgba[k * 4 + q];
+    }
+    glVertexPointer(3, GL_FLOAT, 0, v);
+    glColorPointer(4, GL_FLOAT, 0, c);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+static void RfxDrawLight(int fx, float xc, float x0, float x1, float yBot, float yTop, float hh, float zg, float alpha) {
+    float en = gBeatPulse, A = alpha;
+    glDisable(GL_TEXTURE_2D);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glDepthMask(GL_FALSE);
+    switch (fx) {
+    case 1: {   // Aurora: drifting colours, a spot of light runs around the frame
+        gL.a0 = 0.0f; gL.a1 = 0.0f; gL.hue0 = gBeatHue; gL.hueSpan = 0.5f; gL.sat = 0.55f; gL.spot = 0.65f;
+        float ext = hh * (0.08f + 0.20f * en), a = (0.22f + 0.78f * en) * A * 0.8f;
+        gL.a0 = a; gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, 0.0f, ext);
+        break; }
+    case 2: {   // Halo: a warm breathing glow
+        gL.hue0 = 0.1f; gL.hueSpan = 0.0f; gL.sat = 0.25f; gL.spot = 0.0f;
+        gL.a0 = (0.18f + 0.62f * en) * A * 0.7f; gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, 0.0f, hh * (0.12f + 0.30f * en));
+        gL.a0 = (0.10f + 0.25f * en) * A * 0.5f;
+        RfxRing(x0, x1, yBot, yTop, zg, hh * (0.12f + 0.30f * en), hh * (0.20f + 0.55f * en));
+        break; }
+    case 3: {   // Neon frame: thin bright line with rainbow colours and a soft halo
+        gL.hue0 = gBeatHue * 2.0f; gL.hueSpan = 1.0f; gL.sat = 0.8f; gL.spot = 0.0f;
+        gL.a0 = (0.55f + 0.45f * en) * A; gL.a1 = gL.a0;
+        RfxRing(x0, x1, yBot, yTop, zg, -hh * 0.012f, hh * 0.03f);
+        gL.a0 = (0.20f + 0.35f * en) * A; gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, hh * 0.03f, hh * (0.10f + 0.12f * en));
+        break; }
+    case 4: {   // Light waves: every beat sends a ring outwards
+        gL.sat = 0.5f; gL.spot = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            float age = gWaves[i];
+            if (age < 0.0f || age >= 1.0f) continue;
+            float ext = age * hh * 0.9f, f = (1.0f - age); f = f * f;
+            float a = f * (0.45f + 0.45f * gWaveStr[i]) * A;
+            gL.hue0 = gBeatHue + age * 0.3f; gL.hueSpan = 0.15f;
+            float wd = hh * 0.07f;
+            gL.a0 = 0.0f; gL.a1 = a; RfxRing(x0, x1, yBot, yTop, zg, ext - wd, ext);
+            gL.a0 = a; gL.a1 = 0.0f; RfxRing(x0, x1, yBot, yTop, zg, ext, ext + wd);
+        }
+        gL.hue0 = gBeatHue; gL.hueSpan = 0.2f; gL.a0 = (0.10f + 0.20f * en) * A; gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, 0.0f, hh * 0.10f);
+        break; }
+    case 5: {   // Spotlight: a slanted band of light sweeps across the cover, faster with the music
+        float w = x1 - x0, bw = w * 0.22f;
+        float ph = fmodf(gBeatClock * (0.25f + 0.5f * en), 1.0f);
+        float cx0 = x0 - bw + ph * (w + 2.0f * bw), skew = w * 0.25f, a = (0.30f + 0.45f * en + 0.2f * gBeatHit) * A;
+        float xs[6] = { cx0 - bw, cx0, cx0 + bw };
+        for (int s = 0; s < 2; s++) {
+            float xa = xs[s], xb = xs[s + 1];
+            float ax = xa, bx = xb, atop = xa + skew, btop = xb + skew;
+            float xy[8] = { fminf(fmaxf(atop, x0), x1), yTop, fminf(fmaxf(btop, x0), x1), yTop, fminf(fmaxf(ax, x0), x1), yBot, fminf(fmaxf(bx, x0), x1), yBot };
+            float a0 = (s == 0) ? 0.0f : a, a1 = (s == 0) ? a : 0.0f;
+            GLfloat col[16] = { 1, 0.97f, 0.88f, a0, 1, 0.97f, 0.88f, a1, 1, 0.97f, 0.88f, a0, 1, 0.97f, 0.88f, a1 };
+            RfxQuad(xy, col, zg);
+        }
+        gL.hue0 = 0.1f; gL.hueSpan = 0.0f; gL.sat = 0.2f; gL.spot = 0.0f; gL.a0 = 0.12f * A * (0.4f + en); gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, 0.0f, hh * 0.08f);
+        break; }
+    case 6: {   // Marquee: bulbs around the cover chase each other
+        enum { N = 28 };
+        for (int i = 0; i < N; i++) {
+            float t = (float)i / (float)N, px, py, nx, ny;
+            RfxPerim(t, x0, x1, yBot, yTop, &px, &py, &nx, &ny);
+            px += nx * hh * 0.07f; py += ny * hh * 0.07f;
+            float s = (float)i / 4.0f - gBeatOrbit * 7.0f; s -= floorf(s);
+            float b = (s < 0.5f) ? 1.0f : (s < 0.7f ? 1.0f - (s - 0.5f) / 0.2f : 0.0f);
+            b = 0.12f + 0.88f * b;
+            float sz = hh * 0.035f * (1.0f + 0.9f * b * (0.3f + gBeatHit));
+            float a = (0.3f + 0.5f * en + 0.2f * gBeatHit) * b * A, r, g, bl;
+            RfxHSV(gBeatHue + t, 0.5f, 1.0f, &r, &g, &bl);
+            float xy[8] = { px - sz, py + sz, px + sz, py + sz, px - sz, py - sz, px + sz, py - sz };
+            GLfloat col[16];
+            for (int k = 0; k < 4; k++) { col[k * 4] = r; col[k * 4 + 1] = g; col[k * 4 + 2] = bl; col[k * 4 + 3] = a; }
+            RfxQuad(xy, col, zg);
+        }
+        break; }
+    case 7: {   // Equalizer: soft bars of light rise from the lower edge
+        enum { B = 12 };
+        float w = x1 - x0, bwid = w / B;
+        for (int i = 0; i < B; i++) {
+            float m = 0.5f + 0.5f * sinf(gBeatClock * (2.6f + 0.55f * i) + i * 1.9f);
+            float hgt = 2.0f * hh * (0.04f + 0.50f * en * m + 0.18f * gBeatHit * (0.5f + 0.5f * sinf(i * 2.3f + gBeatClock * 5.0f)));
+            float bx0 = x0 + i * bwid + bwid * 0.12f, bx1 = x0 + (i + 1) * bwid - bwid * 0.12f, r, g, b;
+            RfxHSV(gBeatHue + (float)i / B * 0.6f, 0.6f, 1.0f, &r, &g, &b);
+            float xy[8] = { bx0, yBot + hgt, bx1, yBot + hgt, bx0, yBot, bx1, yBot };
+            float aa = (0.18f + 0.35f * en) * A;
+            GLfloat col[16] = { r, g, b, 0.0f, r, g, b, 0.0f, r, g, b, aa, r, g, b, aa };
+            RfxQuad(xy, col, zg);
+        }
+        break; }
+    case 8: {   // Colour wash: the whole cover is tinted by a slowly drifting colour that swells with the music
+        float r, g, b;
+        RfxHSV(gBeatHue * 2.0f, 0.7f, 1.0f, &r, &g, &b);
+        float a = (0.04f + 0.26f * en + 0.10f * gBeatHit) * A;
+        float xy[8] = { x0, yTop, x1, yTop, x0, yBot, x1, yBot };
+        GLfloat col[16];
+        for (int k = 0; k < 4; k++) { col[k * 4] = r; col[k * 4 + 1] = g; col[k * 4 + 2] = b; col[k * 4 + 3] = a * (k < 2 ? 0.6f : 1.0f); }
+        RfxQuad(xy, col, zg);
+        gL.hue0 = gBeatHue * 2.0f; gL.hueSpan = 0.0f; gL.sat = 0.7f; gL.spot = 0.0f; gL.a0 = a * 0.9f; gL.a1 = 0.0f;
+        RfxRing(x0, x1, yBot, yTop, zg, 0.0f, hh * (0.05f + 0.10f * en));
+        break; }
+    }
+    glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 // is this tile the title that is playing (or an album that contains it)?
@@ -795,25 +1049,27 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                     m_colors[v * 4 + 3] = a;
                 }
                 glColorPointer(4, GL_FLOAT, 0, m_colors);
+                if (m_placeholdertexture == nil) [self CreatePlaceholderTextures];
                 glBindTexture(GL_TEXTURE_2D, [m_placeholdertexture texture]);
                 glVertexPointer(3, GL_FLOAT, 0, q);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                 hh = (kA * (float)p1) / 100.0f;
                 again = YES;
             }
-            glBindTexture(GL_TEXTURE_2D, [tile texture]);
+            GLuint texName0 = [tile texture];
+            if (texName0 == 0 && m_placeholdertexture != nil) texName0 = [m_placeholdertexture texture];
+            glBindTexture(GL_TEXTURE_2D, texName0);
             ClipObject *clipForId = [[self m_tilearray] objectAtIndex:tileIdx];
             if ([clipForId ID] == m_id_to_delete) hh = hh * m_deleteexplodefactor;
             if (betaA >= 0.0) hh *= (float)betaS;
-            BOOL beatTile = (gBeatFrame && RfxTileIsPlaying(clipForId, playingClip));       // the playing cover gets the light
+            BOOL beatTile = (gBeatFrame && RfxTileIsPlaying(clipForId, playingClip));       // the playing cover gets the effect
             GLfloat q[12];
             memset(q, 0, sizeof(q));
-                        float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
+            float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
             float yBot = Yc - hh, yTop = Yc + hh;
-            q[0] = x0; q[1] = yTop; q[2] = Zf;
-            q[3] = x1; q[4] = yTop; q[5] = Zf;
-            q[6] = x0; q[7] = yBot; q[8] = Zf;
-            q[9] = x1; q[10] = yBot; q[11] = Zf;
+            float qx[4] = { x0, x1, x0, x1 }, qy[4] = { yTop, yTop, yBot, yBot };
+            RfxXfBegin(beatTile && gFXMove, (float)xc, yBot, hh, NO);
+            for (int k = 0; k < 4; k++) { RfxXf(&qx[k], &qy[k]); q[k * 3] = qx[k]; q[k * 3 + 1] = qy[k]; q[k * 3 + 2] = Zf; }
             glVertexPointer(3, GL_FLOAT, 0, q);
             int p3 = [tile percent];
             float pa = (float)((double)(float)p3 / 100.0 * alpha);
@@ -902,44 +1158,16 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
                 again = YES;                     // keep drawing frames while the water moves
             }
-            // Aurora around the playing cover (additive): 8 points around the frame, each with its own hue and a travelling bright spot
-            if (beatTile && !(gRfxWaterOn && [clipForId ID] == gRfxWaterID) && [tile percent] > 99) {
-                float en = gBeatPulse;
-                float ga = (0.22f + 0.78f * en) * (float)alpha;
-                float ext = hh * (0.08f + 0.20f * en);
-                float zg = Zf + 0.02f;
-                enum { GN = 9 };
-                GLfloat gv[GN * 2 * 3], gc[GN * 2 * 4];
-                float ix[8] = { x0, (x0 + x1) * 0.5f, x1, x1, x1, (x0 + x1) * 0.5f, x0, x0 };
-                float iy[8] = { yTop, yTop, yTop, (yTop + yBot) * 0.5f, yBot, yBot, yBot, (yTop + yBot) * 0.5f };
-                float ox[8] = { x0 - ext, (x0 + x1) * 0.5f, x1 + ext, x1 + ext, x1 + ext, (x0 + x1) * 0.5f, x0 - ext, x0 - ext };
-                float oy[8] = { yTop + ext, yTop + ext, yTop + ext, (yTop + yBot) * 0.5f, yBot - ext, yBot - ext, yBot - ext, (yTop + yBot) * 0.5f };
-                for (int k = 0; k < GN; k++) {
-                    int c = k & 7;
-                    float pos = (float)c / 8.0f;
-                    float d = pos - gBeatOrbit; d -= floorf(d);
-                    float spot = 0.5f + 0.5f * cosf(d * 6.2831853f);          // 1 at the spot, 0 opposite
-                    spot = spot * spot * spot;
-                    float a = ga * (0.35f + 0.65f * spot);
-                    float cr, cg, cb;
-                    RfxHSV(gBeatHue + pos * 0.5f, 0.55f - 0.25f * spot, 1.0f, &cr, &cg, &cb);
-                    gv[(k * 2) * 3 + 0] = ox[c]; gv[(k * 2) * 3 + 1] = oy[c]; gv[(k * 2) * 3 + 2] = zg;
-                    gv[(k * 2 + 1) * 3 + 0] = ix[c]; gv[(k * 2 + 1) * 3 + 1] = iy[c]; gv[(k * 2 + 1) * 3 + 2] = zg;
-                    gc[(k * 2) * 4 + 0] = cr; gc[(k * 2) * 4 + 1] = cg; gc[(k * 2) * 4 + 2] = cb; gc[(k * 2) * 4 + 3] = 0.0f;
-                    gc[(k * 2 + 1) * 4 + 0] = cr; gc[(k * 2 + 1) * 4 + 1] = cg; gc[(k * 2 + 1) * 4 + 2] = cb; gc[(k * 2 + 1) * 4 + 3] = a * 0.8f;
-                }
-                glDisable(GL_TEXTURE_2D);
-                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-                glEnableClientState(GL_COLOR_ARRAY);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                glVertexPointer(3, GL_FLOAT, 0, gv);
-                glColorPointer(4, GL_FLOAT, 0, gc);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, GN * 2);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            // light on the playing cover (additive); the movement effects transform the light with the cover
+            if (beatTile && gFXLight != 0 && !(gRfxWaterOn && [clipForId ID] == gRfxWaterID) && [tile percent] > 99) {
+                RfxXfBegin(gFXMove, (float)xc, yBot, hh, NO);
+                RfxDrawLight(gFXLight, (float)xc, x0, x1, yBot, yTop, hh, Zf + 0.02f, (float)alpha);
                 glColorPointer(4, GL_FLOAT, 0, m_colors);        // never leave a pointer to a stack array behind
+                glColor4f(1.0f, 1.0f, 1.0f, (float)alpha);
                 glEnableClientState(GL_TEXTURE_COORD_ARRAY);
                 glEnable(GL_TEXTURE_2D);
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
+                glBindTexture(GL_TEXTURE_2D, texName0);
                 again = YES;
             }
         }
@@ -1001,10 +1229,10 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 float x0 = (float)(xc - (double)h28), x1 = (float)((double)h28 + xc);
                 float yLow = ((-h28) - h30) + Yr;
                 float yUp = Yr - h28;
-                v[0] = x0; v[1] = yLow; v[2] = Zr;
-                v[3] = x1; v[4] = yLow; v[5] = Zr;
-                v[6] = x0; v[7] = yUp;  v[8] = Zr;
-                v[9] = x1; v[10] = yUp; v[11] = Zr;
+                float rx[4] = { x0, x1, x0, x1 }, ry[4] = { yLow, yLow, yUp, yUp };
+                BOOL beatRefl = (gBeatFrame && gFXMove && RfxTileIsPlaying([[self m_tilearray] objectAtIndex:tileIdx], playingClip));
+                RfxXfBegin(beatRefl, (float)xc, yUp, h28, YES);
+                for (int k = 0; k < 4; k++) { RfxXf(&rx[k], &ry[k]); v[k * 3] = rx[k]; v[k * 3 + 1] = ry[k]; v[k * 3 + 2] = Zr; }
             }
             glVertexPointer(3, GL_FLOAT, 0, v);
             if (r5 <= 0) {
@@ -1092,6 +1320,10 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
         glGenTextures(1, &tex);
         [EAGLContext setCurrentContext:[self contextForCurrentThread]];
         glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);      // a texture without complete parameters renders white
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ts, ts, 0, GL_RGBA, GL_UNSIGNED_BYTE, buf);
         if (gv_texfallback) break;
         if (glGetError() != GL_INVALID_VALUE) break;
@@ -1147,12 +1379,18 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
         [self AddRedDot:number withContext:ctx];
     } else {
         // no cover picture (or a card kind that only existed with the server): the "cover-note" placeholder with a 1px frame
-        CGContextDrawImage(ctx, CGRectMake(1.0f, 1.0f, w, w), [[UIImage imageNamed:@"cover-note.png"] CGImage]);
-        CGContextSetFillColorWithColor(ctx, [gray CGColor]);
-        CGContextFillRect(ctx, CGRectMake(0, 0, w, 1.0f));
-        CGContextFillRect(ctx, CGRectMake(0, w - 1.0f, w, 1.0f));
-        CGContextFillRect(ctx, CGRectMake(0, 0, 1.0f, w));
-        CGContextFillRect(ctx, CGRectMake(w - 1.0f, 0, 1.0f, w));
+        id bp = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevCoverBorder"];
+        BOOL frame = (bp != nil) && [bp boolValue];
+        if (frame) {
+            CGContextDrawImage(ctx, CGRectMake(1.0f, 1.0f, w, w), [[UIImage imageNamed:@"cover-note.png"] CGImage]);
+            CGContextSetFillColorWithColor(ctx, [gray CGColor]);
+            CGContextFillRect(ctx, CGRectMake(0, 0, w, 1.0f));
+            CGContextFillRect(ctx, CGRectMake(0, w - 1.0f, w, 1.0f));
+            CGContextFillRect(ctx, CGRectMake(0, 0, 1.0f, w));
+            CGContextFillRect(ctx, CGRectMake(w - 1.0f, 0, 1.0f, w));
+        } else {
+            CGContextDrawImage(ctx, CGRectMake(0, 0, w, w), [[UIImage imageNamed:@"cover-note.png"] CGImage]);
+        }
     }
     return [DEL EndImageContext:ctx];
 }
