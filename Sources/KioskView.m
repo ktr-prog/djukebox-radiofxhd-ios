@@ -694,14 +694,19 @@ extern UIView *gRfxBackdropGL;
 // 10 second excerpt in a loop; a new song cross-fades into the next video.  The picture sits behind the coverflow (the GL
 // view clears to transparent while it runs).  Dev menu switch "RfxDevBackdrop".
 // A video file of the user (Documents/Backdrops): the same 10 second excerpt, muted, looped, works offline.
+// TEST MODE: the downloaded video is kept whole and plays from start to end in a loop (shortening to the 10 s excerpt comes later)
+static const BOOL kBackdropFullTest = YES;
+
 @interface RfxVideoView : UIView {
     AVPlayer *m_p;
     id m_obs;
+    id m_endobs;
     double m_s, m_e;
 }
 - (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur;
 - (id)initWithFrame:(CGRect)f asset:(AVURLAsset *)asset duration:(double)dur start:(double)fs;   // fs >= 0: excerpt starts there (downloaded excerpt files)
 - (BOOL)isRunning;
+- (NSString *)diag;
 - (void)stop;
 @end
 
@@ -722,6 +727,14 @@ extern UIView *gRfxBackdropGL;
         m_s = (dur > 12.0) ? fmin(dur * 0.35, dur - 11.0) : 0.0;
         m_e = (dur > 0) ? fmin(m_s + 10.0, dur) : m_s + 10.0;
         if (fs >= 0.0) { m_s = fs; m_e = fs + 10.0; }       // the downloaded file holds exactly this part
+        if (fs >= 0.0 && kBackdropFullTest) {                // test mode: the whole downloaded video plays, then starts over
+            m_s = 0.0; m_e = 1.0e9;
+            __block RfxVideoView *me2 = self;
+            m_endobs = [[[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:it queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+                [me2->m_p seekToTime:kCMTimeZero toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+                [me2->m_p play];
+            }] retain];
+        }
         [m_p seekToTime:CMTimeMakeWithSeconds(m_s, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
         [m_p play];
         __block RfxVideoView *me = self;
@@ -739,7 +752,13 @@ extern UIView *gRfxBackdropGL;
     return it != nil && [it status] == AVPlayerItemStatusReadyToPlay && [[(AVPlayerLayer *)[self layer] player] rate] > 0.0f
         && CMTimeGetSeconds([m_p currentTime]) >= m_s - 0.1 && [(AVPlayerLayer *)[self layer] isReadyForDisplay];
 }
+- (NSString *)diag {
+    AVPlayerItem *it = [m_p currentItem];
+    return [NSString stringWithFormat:@"status=%d rate=%.1f t=%.1f ready=%d err=%@", (int)[it status], [m_p rate], CMTimeGetSeconds([m_p currentTime]),
+            (int)[(AVPlayerLayer *)[self layer] isReadyForDisplay], [[it error] localizedDescription]];
+}
 - (void)stop {
+    if (m_endobs != nil) { [[NSNotificationCenter defaultCenter] removeObserver:m_endobs]; [m_endobs release]; m_endobs = nil; }
     if (m_obs != nil) { [m_p removeTimeObserver:m_obs]; [m_obs release]; m_obs = nil; }
     [m_p pause];
     [(AVPlayerLayer *)[self layer] setPlayer:nil];
@@ -807,8 +826,8 @@ static const CGFloat kBackdropAlpha = 0.8;
     __block void (^poll)(void) = nil;
     poll = [^{
         if (m_pending != v || m_gen != g) { [poll release]; return; }
-        if ([v isRunning]) { [self promote:v]; [poll release]; return; }
-        if (++tries > 60) { RfxBDLog(@"Video startet nicht (Player-Timeout)"); [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
+        if ([v isRunning]) { RfxBDLog(@"Video läuft"); [self promote:v]; [poll release]; return; }
+        if (++tries > 60) { RfxBDLog([NSString stringWithFormat:@"Video startet nicht (Player-Timeout): %@", [v diag]]); [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
     } copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
@@ -828,65 +847,56 @@ static const CGFloat kBackdropAlpha = 0.8;
     [self attach:v in:host behind:ref];
 }
 
-// Downloaded excerpts: Documents/BackdropCache/<videoId>_s<start seconds>.mp4 holds the first part of the video up to the end of the
-// 10 second excerpt (the plugin hands out a progressive mp4 whose index is at the front, so the part plays like a whole file).
+// Downloaded videos: Documents/BackdropCache/<videoId>_f.mp4 (visible in the Files app while debugging)
 + (NSString *)backdropDir {
-    NSString *d = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"BackdropCache"];       // visible in the Files app while debugging
+    NSString *d = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"BackdropCache"];
     [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     return d;
 }
 + (NSString *)cachedFileForVideoId:(NSString *)vid start:(double *)start {
     if ([vid length] == 0) return nil;
-    NSString *dir = [self backdropDir], *pre = [vid stringByAppendingString:@"_s"];
-    for (NSString *fn in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
-        if ([fn hasPrefix:pre] && [[fn pathExtension] isEqualToString:@"mp4"]) {
-            NSString *num = [[fn stringByDeletingPathExtension] substringFromIndex:[pre length]];
-            if (start) *start = [num doubleValue];
-            return [dir stringByAppendingPathComponent:fn];
-        }
-    }
-    return nil;
+    NSString *p = [[self backdropDir] stringByAppendingPathComponent:[vid stringByAppendingString:@"_f.mp4"]];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p]) return nil;
+    if (start) *start = 0.0;
+    return p;
 }
+
 - (void)downloadURL:(NSURL *)url headers:(NSDictionary *)headers duration:(double)dur bitrate:(double)br videoId:(NSString *)vid done:(void (^)(NSString *, double))done {
-    double fs = (dur > 12.0) ? fmin(dur * 0.35, dur - 11.0) : 0.0;
-    if (dur <= 0.0) fs = 0.0;
-    fs = floor(fs);
-    if (br < 150000.0) br = 900000.0;
-    double bytes = (fs + 10.0 + 4.0) * br / 8.0 * 1.35 + 262144.0;            // slack for the interleaving and the peaks of the bit rate
-    if (bytes > 48.0 * 1048576.0) bytes = 48.0 * 1048576.0;
     NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:url];
-    [rq setTimeoutInterval:40.0];
+    [rq setTimeoutInterval:60.0];
     for (NSString *k in headers) [rq setValue:[[headers objectForKey:k] description] forHTTPHeaderField:k];
-    [rq setValue:[NSString stringWithFormat:@"bytes=0-%lld", (long long)bytes] forHTTPHeaderField:@"Range"];
-    NSString *name = [NSString stringWithFormat:@"%@_s%d.mp4", vid, (int)fs];
-    NSString *dir = [RfxBackdrop backdropDir];
+    NSString *dest = [[RfxBackdrop backdropDir] stringByAppendingPathComponent:[vid stringByAppendingString:@"_f.mp4"]];
     void (^cb)(NSString *, double) = [done copy];
-    [[[NSURLSession sharedSession] dataTaskWithRequest:rq completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    [[[NSURLSession sharedSession] downloadTaskWithRequest:rq completionHandler:^(NSURL *loc, NSURLResponse *resp, NSError *err) {
         NSInteger code = [resp isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)resp statusCode] : 0;
         NSString *path = nil;
-        if (err == nil && (code == 200 || code == 206) && [data length] > 100000) {
-            NSData *head = [data subdataWithRange:NSMakeRange(0, MIN((NSUInteger)262144, [data length]))];
-            BOOL moov = [head rangeOfData:[NSData dataWithBytes:"moov" length:4] options:0 range:NSMakeRange(0, [head length])].location != NSNotFound;
-            if (moov) {
-                path = [dir stringByAppendingPathComponent:name];
-                if (![data writeToFile:path atomically:YES]) path = nil;
+        if (err == nil && loc != nil && (code == 200 || code == 206)) {
+            NSData *head = [NSData dataWithContentsOfURL:loc options:NSDataReadingMappedIfSafe error:nil];
+            unsigned long long sz = [[[[NSFileManager defaultManager] attributesOfItemAtPath:[loc path] error:nil] objectForKey:NSFileSize] unsignedLongLongValue];
+            NSData *first = ([head length] > 0) ? [head subdataWithRange:NSMakeRange(0, MIN((NSUInteger)524288, [head length]))] : nil;
+            BOOL moov = first != nil && [first rangeOfData:[NSData dataWithBytes:"moov" length:4] options:0 range:NSMakeRange(0, [first length])].location != NSNotFound;
+            BOOL ftyp = first != nil && [first rangeOfData:[NSData dataWithBytes:"ftyp" length:4] options:0 range:NSMakeRange(0, MIN((NSUInteger)64, [first length]))].location != NSNotFound;
+            RfxBDLog([NSString stringWithFormat:@"Download fertig: %llu Bytes, HTTP %d, ftyp=%d moov-vorn=%d", sz, (int)code, ftyp, moov]);
+            if (sz > 100000 && ftyp) {
+                [[NSFileManager defaultManager] removeItemAtPath:dest error:nil];
+                if ([[NSFileManager defaultManager] moveItemAtPath:[loc path] toPath:dest error:nil]) path = dest;
             }
-        }
-        if (err != nil) NSLog(@"[backdrop] download: %@", err);
-        else if (path == nil) NSLog(@"[backdrop] download refused or without index (HTTP %d)", (int)code);
-        else {   // keep the cache small: at most 24 excerpts
+        } else if (err != nil) RfxBDLog([NSString stringWithFormat:@"Download Fehler: %@", [err localizedDescription]]);
+        else RfxBDLog([NSString stringWithFormat:@"Download abgelehnt: HTTP %d", (int)code]);
+        if (path != nil) {   // keep the cache small: at most 12 videos
+            NSString *dir = [RfxBackdrop backdropDir];
             NSArray *all = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-            if ([all count] > 24) {
+            if ([all count] > 12) {
                 NSMutableArray *dated = [NSMutableArray array];
                 for (NSString *fn in all) {
                     NSDate *dt = [[[NSFileManager defaultManager] attributesOfItemAtPath:[dir stringByAppendingPathComponent:fn] error:nil] fileModificationDate];
                     [dated addObject:[NSArray arrayWithObjects:fn, (dt ? dt : [NSDate distantPast]), nil]];
                 }
                 [dated sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [[a objectAtIndex:1] compare:[b objectAtIndex:1]]; }];
-                for (int i = 0; i < (int)[dated count] - 24; i++) [[NSFileManager defaultManager] removeItemAtPath:[dir stringByAppendingPathComponent:[[dated objectAtIndex:i] objectAtIndex:0]] error:nil];
+                for (int i = 0; i < (int)[dated count] - 12; i++) [[NSFileManager defaultManager] removeItemAtPath:[dir stringByAppendingPathComponent:[[dated objectAtIndex:i] objectAtIndex:0]] error:nil];
             }
         }
-        cb(path, fs);
+        cb(path, 0.0);
         [cb release];
     }] resume];
 }
