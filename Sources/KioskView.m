@@ -748,9 +748,9 @@ static const BOOL kBackdropFullTest = YES;
 }
 // the picture is there: the item is ready and the excerpt has started to play
 - (BOOL)isRunning {
+    // a layer of a view with alpha 0 is not rendered, so isReadyForDisplay never turns YES for it: judge by the playback itself
     AVPlayerItem *it = [m_p currentItem];
-    return it != nil && [it status] == AVPlayerItemStatusReadyToPlay && [[(AVPlayerLayer *)[self layer] player] rate] > 0.0f
-        && CMTimeGetSeconds([m_p currentTime]) >= m_s - 0.1 && [(AVPlayerLayer *)[self layer] isReadyForDisplay];
+    return it != nil && [it status] == AVPlayerItemStatusReadyToPlay && [m_p rate] > 0.0f && CMTimeGetSeconds([m_p currentTime]) >= m_s + 0.25;
 }
 - (NSString *)diag {
     AVPlayerItem *it = [m_p currentItem];
@@ -788,6 +788,8 @@ static void SetBackdropTransparent(BOOL on) {      // the coverflow clears to tr
     gRfxBackdropOn = on;
     UIView *g = [gRfxBackdropGL retain];
     [[g layer] setOpaque:!on];
+    [g setBackgroundColor:(on ? [UIColor clearColor] : [UIColor blackColor])];     // the black ground of the GL view would cover the video
+    RfxBDLog(on ? @"GL-Ansicht transparent" : @"GL-Ansicht wieder deckend");
     [g release];
 }
 static const CGFloat kBackdropAlpha = 0.8;
@@ -818,7 +820,8 @@ static const CGFloat kBackdropAlpha = 0.8;
 - (void)attach:(RfxVideoView *)v in:(UIView *)host behind:(UIView *)ref {
     [v setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
     [v setUserInteractionEnabled:NO];
-    [v setAlpha:0.0];
+    [v setAlpha:0.01];          // not 0: a fully transparent view is not rendered, the player would not start showing frames
+    RfxBDLog([NSString stringWithFormat:@"Player angelegt (Host %@, Frame %@)", NSStringFromClass([host class]), NSStringFromCGRect([v frame])]);
     [host insertSubview:v belowSubview:ref];
     m_pending = v;
     int g = m_gen;
@@ -827,6 +830,7 @@ static const CGFloat kBackdropAlpha = 0.8;
     poll = [^{
         if (m_pending != v || m_gen != g) { [poll release]; return; }
         if ([v isRunning]) { RfxBDLog(@"Video läuft"); [self promote:v]; [poll release]; return; }
+        if (tries == 4 || tries == 14 || tries == 30) RfxBDLog([NSString stringWithFormat:@"wartet auf Start: %@", [v diag]]);
         if (++tries > 60) { RfxBDLog([NSString stringWithFormat:@"Video startet nicht (Player-Timeout): %@", [v diag]]); [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
     } copy];
