@@ -34,6 +34,8 @@ static const GLfloat kTexCoordMain[8]    = { 0, 1,  1, 1,  0, 0,  1, 0 };
 static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 
 // Water level of the cover that belongs to a plugin title that is loading (see SetWaterForClipID:level:)
+BOOL gRfxBackdropOn = NO;   // a video runs behind the coverflow: clear to transparent
+UIView *gRfxBackdropGL = nil;
 BOOL gRfxBetaLook = NO;       // dev menu: layout of the first Tobit Djukebox
 static long long gRfxWaterID = 0;
 static float gRfxWaterTarget = 0.0f;
@@ -615,7 +617,7 @@ static void RfxDrawLight(int fx, float xc, float x0, float x1, float yBot, float
     glDisable(GL_TEXTURE_2D);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glBlendFuncSeparateOES(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);      // light only adds colour, the alpha channel (video behind the view) stays
     glDepthMask(GL_FALSE);
     switch (fx) {
     case 1: {   // Aurora: drifting colours, a spot of light runs around the frame
@@ -714,7 +716,7 @@ static void RfxDrawLight(int fx, float xc, float x0, float x1, float yBot, float
         break; }
     }
     glDepthMask(GL_TRUE);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparateOES(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 // is this tile the title that is playing (or an album that contains it)?
@@ -846,7 +848,9 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
     if (viewRenderbuffer == 0 || viewFramebuffer == 0 || context == nil) return NO;
 
     glLoadIdentity();
-    glClearColor(0, 0, 0, 1.0f);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparateOES(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);     // keeps the alpha channel right when the video shows through
+    glClearColor(0, 0, 0, gRfxBackdropOn ? 0.0f : 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     if (count == 0) {
         m_lastmidindex = -2;
