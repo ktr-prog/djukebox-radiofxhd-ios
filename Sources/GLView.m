@@ -422,35 +422,35 @@ static BOOL gRfxWaterOn = NO;
 
 #pragma mark - drawing
 
-// ---- beat of the playing cover ------------------------------------------------------------------------------------
-// Only strong bass hits move the cover (everything below ~78 % of the recent peak is ignored, so it does not tremble); every hit
-// picks the next of four cartoon "boombox" shapes: wide pump, tall stretch, big with a lean left, big with a lean right.  The
-// effect is live as soon as a song is playing (the same moment the small CD appears), no warm-up.
-static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatSX = 1.0f, gBeatSY = 1.0f, gBeatTilt = 0.0f;
-static double gBeatT = 0;
-static int gBeatShape = 0;
-static BOOL gBeatHeld = NO;
+// ---- light on the playing cover -----------------------------------------------------------------------------------
+// Like the Just Dance menu: the cover does not move or change shape, it only gets a light.  A real onset detector (the bass peak
+// jumps above its own short-term average) fires the light at full strength, which then fades out within ~0.2 s; between the hits a
+// faint glow marks the playing cover.  The peaks come from the audio thread as "loudest since the last frame", so no hit is missed.
+static float gBeatPulse = 0.0f, gBeatPeak = 0.02f, gBeatAvg = 0.0f;
+static double gBeatT = 0, gBeatLast = 0;
 static BOOL gBeatFrame = NO;           // drawIntern wants another frame although nothing else animates
 
 static void RfxBeatUpdate(BOOL playing) {
-    static const float kSX[4] = { 1.15f, 1.04f, 1.10f, 1.10f }, kSY[4] = { 1.03f, 1.15f, 1.08f, 1.08f }, kTilt[4] = { 0.0f, 0.0f, -0.09f, 0.09f };
     double now = CACurrentMediaTime();
     double dt = now - gBeatT; gBeatT = now;
     if (dt < 0.0 || dt > 0.1) dt = 0.1;
-    float lvl = playing ? RfxBeatLevel() : 0.0f;
-    if (lvl > gBeatPeak) gBeatPeak = lvl; else gBeatPeak *= (float)exp(-dt / 4.0);
+    float lvl = RfxBeatTake();
+    if (!playing) { gBeatPulse = 0.0f; gBeatAvg = 0.0f; gBeatFrame = NO; return; }
+    if (lvl > gBeatPeak) gBeatPeak = lvl; else gBeatPeak *= (float)exp(-dt / 5.0);
     if (gBeatPeak < 0.02f) gBeatPeak = 0.02f;
-    float norm = lvl / gBeatPeak, target = 0.0f;
-    if (lvl > 0.03f && norm > 0.78f) target = (norm - 0.78f) / 0.22f;
-    if (target > 1.0f) target = 1.0f;
-    if (target > 0.5f && !gBeatHeld) { gBeatHeld = YES; gBeatShape = (gBeatShape + 1) & 3; }
-    if (target < 0.2f) gBeatHeld = NO;
-    gBeatPulse = (target > gBeatPulse) ? target : gBeatPulse * (float)exp(-dt / 0.14);
-    if (gBeatPulse < 0.003f) gBeatPulse = 0.0f;
-    gBeatSX = 1.0f + (kSX[gBeatShape] - 1.0f) * gBeatPulse;
-    gBeatSY = 1.0f + (kSY[gBeatShape] - 1.0f) * gBeatPulse;
-    gBeatTilt = kTilt[gBeatShape] * gBeatPulse;
-    gBeatFrame = playing && (lvl > 0.002f || gBeatPulse > 0.0f);
+    // onset: clearly above the recent average and not tiny compared with the recent peak, at most ~8 hits per second
+    if (lvl > 0.03f && lvl > gBeatAvg * 1.4f && lvl > gBeatPeak * 0.45f && now - gBeatLast > 0.12) {
+        float strength = lvl / gBeatPeak;
+        if (strength > 1.0f) strength = 1.0f;
+        float t = 0.55f + 0.45f * strength;
+        if (t > gBeatPulse) gBeatPulse = t;
+        gBeatLast = now;
+    } else {
+        gBeatPulse *= (float)exp(-dt / 0.16);
+    }
+    if (gBeatPulse < 0.004f) gBeatPulse = 0.0f;
+    gBeatAvg += (lvl - gBeatAvg) * (float)(1.0 - exp(-dt / 0.35));
+    gBeatFrame = YES;                  // keep the faint glow and the fade alive while the song plays
 }
 
 // is this tile the title that is playing (or an album that contains it)?
@@ -478,7 +478,7 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
     // exactly one pending follow-up frame: several callers of drawView used to start a chain each, the chains piled up and
     // the carousel got sluggish after a while.  60 frames per second while something animates.
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drawView) object:nil];
-    [self performSelector:@selector(drawView) withObject:nil afterDelay:(again ? 1.0 / 60.0 : 1.0 / 40.0)];
+    [self performSelector:@selector(drawView) withObject:nil afterDelay:(1.0 / 60.0)];
 }
 
 // Fills the paint order (the angular slot of every tile) and the picture order (index into the tile array).
@@ -795,14 +795,13 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
             ClipObject *clipForId = [[self m_tilearray] objectAtIndex:tileIdx];
             if ([clipForId ID] == m_id_to_delete) hh = hh * m_deleteexplodefactor;
             if (betaA >= 0.0) hh *= (float)betaS;
-            BOOL beatTile = (gBeatPulse > 0.0f && RfxTileIsPlaying(clipForId, playingClip));       // the playing cover beats with the music
+            BOOL beatTile = (gBeatFrame && RfxTileIsPlaying(clipForId, playingClip));       // the playing cover gets the light
             GLfloat q[12];
             memset(q, 0, sizeof(q));
-            float bsx = beatTile ? gBeatSX : 1.0f, bsy = beatTile ? gBeatSY : 1.0f, bskew = beatTile ? gBeatTilt * hh : 0.0f;
-            float x0 = (float)(xc - (double)hh * bsx), x1 = (float)((double)hh * bsx + xc);
-            float yBot = Yc - hh, yTop = yBot + 2.0f * hh * bsy;       // the bottom edge stays on its line (the reflection hangs there)
-            q[0] = x0 + bskew; q[1] = yTop; q[2] = Zf;
-            q[3] = x1 + bskew; q[4] = yTop; q[5] = Zf;
+                        float x0 = (float)(xc - (double)hh), x1 = (float)((double)hh + xc);
+            float yBot = Yc - hh, yTop = Yc + hh;
+            q[0] = x0; q[1] = yTop; q[2] = Zf;
+            q[3] = x1; q[4] = yTop; q[5] = Zf;
             q[6] = x0; q[7] = yBot; q[8] = Zf;
             q[9] = x1; q[10] = yBot; q[11] = Zf;
             glVertexPointer(3, GL_FLOAT, 0, q);
@@ -893,6 +892,42 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
                 again = YES;                     // keep drawing frames while the water moves
             }
+            // Light on the playing cover (additive): a soft halo around the edge plus a faint brightening of the cover itself
+            if (beatTile && !(gRfxWaterOn && [clipForId ID] == gRfxWaterID) && [tile percent] > 99) {
+                float gl = 0.10f + 0.90f * gBeatPulse;
+                float ga = gl * (float)alpha;
+                float ext = hh * (0.10f + 0.30f * gBeatPulse);
+                float zg = Zf + 0.02f;
+                GLfloat gv[10 * 3], gc[10 * 4];
+                float ox[4] = { x0 - ext, x1 + ext, x1 + ext, x0 - ext }, oy[4] = { yTop + ext, yTop + ext, yBot - ext, yBot - ext };
+                float ix[4] = { x0, x1, x1, x0 }, iy[4] = { yTop, yTop, yBot, yBot };
+                for (int k = 0; k < 5; k++) {
+                    int c = k & 3;
+                    gv[(k * 2) * 3 + 0] = ox[c]; gv[(k * 2) * 3 + 1] = oy[c]; gv[(k * 2) * 3 + 2] = zg;
+                    gv[(k * 2 + 1) * 3 + 0] = ix[c]; gv[(k * 2 + 1) * 3 + 1] = iy[c]; gv[(k * 2 + 1) * 3 + 2] = zg;
+                    gc[(k * 2) * 4 + 0] = 1.0f; gc[(k * 2) * 4 + 1] = 0.96f; gc[(k * 2) * 4 + 2] = 0.86f; gc[(k * 2) * 4 + 3] = 0.0f;
+                    gc[(k * 2 + 1) * 4 + 0] = 1.0f; gc[(k * 2 + 1) * 4 + 1] = 0.96f; gc[(k * 2 + 1) * 4 + 2] = 0.86f; gc[(k * 2 + 1) * 4 + 3] = ga * 0.85f;
+                }
+                glDisable(GL_TEXTURE_2D);
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+                glEnableClientState(GL_COLOR_ARRAY);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                glVertexPointer(3, GL_FLOAT, 0, gv);
+                glColorPointer(4, GL_FLOAT, 0, gc);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 10);
+                // the cover itself gets lighter
+                GLfloat ov[12] = { x0, yTop, zg, x1, yTop, zg, x0, yBot, zg, x1, yBot, zg };
+                GLfloat oc[16];
+                for (int k = 0; k < 4; k++) { oc[k * 4 + 0] = 1.0f; oc[k * 4 + 1] = 0.97f; oc[k * 4 + 2] = 0.88f; oc[k * 4 + 3] = ga * 0.30f; }
+                glVertexPointer(3, GL_FLOAT, 0, ov);
+                glColorPointer(4, GL_FLOAT, 0, oc);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+                glEnable(GL_TEXTURE_2D);
+                glTexCoordPointer(2, GL_FLOAT, 0, kTexCoordMain);
+                again = YES;
+            }
         }
         // the colour array stays enabled for fully loaded covers
         if ([tile percent] <= 99) glDisableClientState(GL_COLOR_ARRAY);
@@ -949,13 +984,11 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 }
                 if ([[[self m_tilearray] objectAtIndex:tileIdx] ID] == m_id_to_delete) h28 = h28 * m_deleteexplodefactor;
                 if (betaA >= 0.0) { h28 *= (float)betaS; h30 *= (float)betaS; }
-                BOOL beatRefl = (gBeatPulse > 0.0f && RfxTileIsPlaying([[self m_tilearray] objectAtIndex:tileIdx], playingClip));
-                float rsx = beatRefl ? gBeatSX : 1.0f, rskew = beatRefl ? gBeatTilt * h28 : 0.0f;
-                float x0 = (float)(xc - (double)h28 * rsx), x1 = (float)((double)h28 * rsx + xc);
+                float x0 = (float)(xc - (double)h28), x1 = (float)((double)h28 + xc);
                 float yLow = ((-h28) - h30) + Yr;
                 float yUp = Yr - h28;
-                v[0] = x0 + rskew; v[1] = yLow; v[2] = Zr;
-                v[3] = x1 + rskew; v[4] = yLow; v[5] = Zr;
+                v[0] = x0; v[1] = yLow; v[2] = Zr;
+                v[3] = x1; v[4] = yLow; v[5] = Zr;
                 v[6] = x0; v[7] = yUp;  v[8] = Zr;
                 v[9] = x1; v[10] = yUp; v[11] = Zr;
             }

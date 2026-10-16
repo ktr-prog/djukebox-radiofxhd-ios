@@ -22,6 +22,7 @@
 // low-passed (bass) level of every bus, written by the render callback; the coverflow lets the playing cover pulse with it
 extern volatile float gRfxBeatBus[kMCMNumBuses];
 float RfxBeatLevel(void);
+float RfxBeatTake(void);
 
 typedef struct SoundBuffer {
     AudioStreamBasicDescription asbd;

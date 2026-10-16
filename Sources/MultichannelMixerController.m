@@ -55,6 +55,8 @@ static void MCM_FloatFormat(AudioStreamBasicDescription *d, double rate) {
 
 volatile float gRfxBeatBus[kMCMNumBuses];
 static float gRfxLP[kMCMNumBuses];
+volatile float gRfxBeatMax = 0.0f;       // loudest bass peak since the last RfxBeatTake (nothing between two frames gets lost)
+float RfxBeatTake(void) { float m = gRfxBeatMax; gRfxBeatMax = 0.0f; return m; }
 float RfxBeatLevel(void) { float m = 0; for (int i = 0; i < kMCMNumBuses; i++) if (gRfxBeatBus[i] > m) m = gRfxBeatBus[i]; return m; }
 
 // ---- Render callback (@0xbdbb4) -------------------------------------------------------------
@@ -100,7 +102,7 @@ static OSStatus renderInput(void *inRefCon, AudioUnitRenderActionFlags *ioAction
             outB[i] = l;
         }
     }
-    if (inBusNumber < kMCMNumBuses) { gRfxLP[inBusNumber] = lp; gRfxBeatBus[inBusNumber] = pk; }
+    if (inBusNumber < kMCMNumBuses) { gRfxLP[inBusNumber] = lp; gRfxBeatBus[inBusNumber] = pk; if (pk > gRfxBeatMax) gRfxBeatMax = pk; }
     if (take != 0) __atomic_store_n(&sb->rpos, r + take, __ATOMIC_RELEASE);
     return 0;
 }
