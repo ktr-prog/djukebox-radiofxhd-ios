@@ -674,6 +674,21 @@ static void RfxWriteThumbs(UIImage *img, NSString *pic, NSString *title) {
 
 #pragma mark - backdrop (muted music video excerpt behind the coverflow)
 
+// Documents/backdrop-log.txt (visible in the Files app): what the backdrop did for the last songs, for finding out why no picture comes
+void RfxBDLog(NSString *line) {
+    NSLog(@"[backdrop] %@", line);
+    @try {
+        NSString *p = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"backdrop-log.txt"];
+        NSString *old = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
+        if (old == nil) old = @"";
+        if ([old length] > 20000) old = [old substringFromIndex:[old length] - 10000];
+        NSDateFormatter *f = [[[NSDateFormatter alloc] init] autorelease];
+        [f setDateFormat:@"HH:mm:ss"];
+        [[old stringByAppendingFormat:@"%@  %@\n", [f stringFromDate:[NSDate date]], line] writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } @catch (NSException *e) {}
+}
+
+
 extern UIView *gRfxBackdropGL;
 // A projection into the background: the music video that belongs to the song that plays (stream resolved by the YouTube Music plugin, muted) runs as a
 // 10 second excerpt in a loop; a new song cross-fades into the next video.  The picture sits behind the coverflow (the GL
@@ -793,7 +808,7 @@ static const CGFloat kBackdropAlpha = 0.8;
     poll = [^{
         if (m_pending != v || m_gen != g) { [poll release]; return; }
         if ([v isRunning]) { [self promote:v]; [poll release]; return; }
-        if (++tries > 60) { [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
+        if (++tries > 60) { RfxBDLog(@"Video startet nicht (Player-Timeout)"); [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
     } copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
@@ -813,10 +828,10 @@ static const CGFloat kBackdropAlpha = 0.8;
     [self attach:v in:host behind:ref];
 }
 
-// Downloaded excerpts: Caches/Backdrops/<videoId>_s<start seconds>.mp4 holds the first part of the video up to the end of the
+// Downloaded excerpts: Documents/BackdropCache/<videoId>_s<start seconds>.mp4 holds the first part of the video up to the end of the
 // 10 second excerpt (the plugin hands out a progressive mp4 whose index is at the front, so the part plays like a whole file).
 + (NSString *)backdropDir {
-    NSString *d = [[NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"Backdrops"];
+    NSString *d = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"BackdropCache"];       // visible in the Files app while debugging
     [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     return d;
 }
@@ -1034,12 +1049,16 @@ static NSArray *RfxSortByOrder(NSArray *names) {
 
 // the music video of a song as a stream (needs the YouTube Music plugin to be loaded): done gets url, headers, duration and video id
 - (void)StreamVideoForTitle:(NSString *)title artist:(NSString *)artist videoId:(NSString *)vid done:(void (^)(NSDictionary *))done {
-    RfxPluginHost *h = [m_hosts objectForKey:@"ytmusic"];
-    if (h == nil || ([title length] == 0 && [vid length] == 0)) { done(nil); return; }
-    NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:(title ? title : @""), @"title", (artist ? artist : @""), @"artist", (vid ? vid : @""), @"videoId", nil];
-    [h call:@"video.stream" params:p done:^(id r, NSString *e) {
-        if (e != nil) NSLog(@"[plugin] video.stream: %@", e);
-        done(([r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] length] > 0) ? r : nil);
+    if ([title length] == 0 && [vid length] == 0) { RfxBDLog(@"kein Titel"); done(nil); return; }
+    void (^done2)(NSDictionary *) = [done copy];
+    [self Load:@"ytmusic" done:^(RfxPluginHost *h) {          // loads the plugin when it is not running yet (no autostart needed)
+        if (h == nil) { RfxBDLog(@"Plugin ytmusic nicht verfügbar (fehlt in Documents/Plugins oder Fehler beim Laden)"); done2(nil); [done2 release]; return; }
+        NSDictionary *p = [NSDictionary dictionaryWithObjectsAndKeys:(title ? title : @""), @"title", (artist ? artist : @""), @"artist", (vid ? vid : @""), @"videoId", nil];
+        [h call:@"video.stream" params:p done:^(id r, NSString *e) {
+            if (e != nil) RfxBDLog([NSString stringWithFormat:@"video.stream Fehler: %@", e]);
+            done2(([r isKindOfClass:[NSDictionary class]] && [[r objectForKey:@"url"] length] > 0) ? r : nil);
+            [done2 release];
+        }];
     }];
 }
 - (BOOL)IsLoaded:(NSString *)name { return [m_hosts objectForKey:name] != nil; }
@@ -4392,9 +4411,11 @@ static void KV_PlayStatus(NSString *text) {
 - (void)UpdateBackdropForClip:(ClipObject *)c {
     RfxBackdrop *bd = [RfxBackdrop shared];
     if (c == nil || ![[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevBackdrop"]) { [bd clear]; return; }
+    RfxBDLog(@"Song gestartet, Hintergrund an");
     gRfxBackdropGL = m_glv;
     int gen = [bd bumpGen];
     NSString *title = [c m_title] ? [c m_title] : @"", *artist = [c m_interpret] ? [c m_interpret] : @"";
+    RfxBDLog([NSString stringWithFormat:@"Titel: '%@' / Interpret: '%@'", title, artist]);
     // 1. a video of the user in Documents/Backdrops ("Artist - Title.mp4" or "Title.mp4"): works offline
     NSString *dir = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0] stringByAppendingPathComponent:@"Backdrops"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -4415,11 +4436,12 @@ static void KV_PlayStatus(NSString *text) {
     NSString *known = [cache objectForKey:key];
     double cs = 0.0;
     NSString *cf = [RfxBackdrop cachedFileForVideoId:known start:&cs];
-    if (cf != nil) { [bd showFile:cf in:self behind:m_glv start:cs]; return; }
+    if (cf != nil) { RfxBDLog([NSString stringWithFormat:@"Cache: %@", [cf lastPathComponent]]); [bd showFile:cf in:self behind:m_glv start:cs]; return; }
     [[RfxPluginManager shared] StreamVideoForTitle:title artist:artist videoId:known done:^(NSDictionary *r) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (r == nil) return;
+            if (r == nil) { RfxBDLog(@"kein Video gefunden/aufgelöst"); return; }
             NSString *vid = [r objectForKey:@"videoId"];
+            RfxBDLog([NSString stringWithFormat:@"Video %@ aufgelöst, lade Ausschnitt", vid]);
             if ([vid length] > 0 && ![vid isEqualToString:known]) {
                 NSMutableDictionary *cd = [NSMutableDictionary dictionaryWithDictionary:[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"RfxVideoIDCache"]];
                 [cd setObject:vid forKey:key];
@@ -4432,6 +4454,7 @@ static void KV_PlayStatus(NSString *text) {
             [bd downloadURL:vu headers:hd duration:dsec bitrate:[[r objectForKey:@"bitrate"] doubleValue] videoId:vid done:^(NSString *path, double fs) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if ([bd gen] != gen) return;
+                    RfxBDLog(path != nil ? [NSString stringWithFormat:@"Ausschnitt geladen: %@", [path lastPathComponent]] : @"Download fehlgeschlagen, streame");
                     if (path != nil) [bd showFile:path in:self behind:m_glv start:fs];
                     else [bd showURL:vu headers:hd duration:dsec in:self behind:m_glv];       // download refused: stream the excerpt instead
                 });
