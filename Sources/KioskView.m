@@ -807,9 +807,11 @@ static void SetBackdropTransparent(BOOL on) {      // the coverflow clears to tr
     [[g layer] setOpaque:!on];
     [g setBackgroundColor:(on ? [UIColor clearColor] : [UIColor blackColor])];     // the black ground of the GL view would cover the video
     RfxBDLog(on ? @"GL-Ansicht transparent" : @"GL-Ansicht wieder deckend");
+    gRfxButtonAlpha = on ? 0.5f : 1.0f;
+    if ([g respondsToSelector:@selector(DimRegisters)]) [(GLView *)g DimRegisters];
     [g release];
 }
-static const CGFloat kBackdropAlpha = 0.36;       // dimmed like a projection in the background
+static const CGFloat kBackdropAlpha = 0.46;       // dimmed like a projection in the background
 
 @implementation RfxBackdrop
 + (RfxBackdrop *)shared { if (gRfxBD == nil) gRfxBD = [[RfxBackdrop alloc] init]; return gRfxBD; }
@@ -839,8 +841,8 @@ static const CGFloat kBackdropAlpha = 0.36;       // dimmed like a projection in
     [v setUserInteractionEnabled:NO];
     {   // the picture fills the upper half of the screen (aspect fill, centred in that area)
         CGRect fr = [ref frame];
-        fr.size.height = [host bounds].size.height * 0.5f - fr.origin.y;
-        if (fr.size.height < 100.0f) fr.size.height = [host bounds].size.height * 0.5f;
+        fr.size.height = [host bounds].size.height * 0.58f - fr.origin.y;
+        if (fr.size.height < 100.0f) fr.size.height = [host bounds].size.height * 0.58f;
         [v setFrame:fr];
     }
     [v setAlpha:0.01];          // not 0: a fully transparent view is not rendered, the player would not start showing frames
@@ -854,7 +856,7 @@ static const CGFloat kBackdropAlpha = 0.36;       // dimmed like a projection in
         if (m_pending != v || m_gen != g) { [poll release]; return; }
         if ([v isRunning]) { RfxBDLog(@"Video läuft"); [self promote:v]; [poll release]; return; }
         if (tries == 4 || tries == 14 || tries == 30) RfxBDLog([NSString stringWithFormat:@"wartet auf Start: %@", [v diag]]);
-        if (++tries > 60) { RfxBDLog([NSString stringWithFormat:@"Video startet nicht (Player-Timeout): %@", [v diag]]); [self teardown:m_pending]; m_pending = nil; [poll release]; return; }       // never started (offline, stream refused)
+        if (++tries > 60) { RfxBDLog([NSString stringWithFormat:@"Video startet nicht (Player-Timeout): %@", [v diag]]); [self teardown:m_pending]; m_pending = nil; [self clear]; [poll release]; return; }       // never started (offline, stream refused)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
     } copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), poll);
@@ -2317,7 +2319,9 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         [NSArray arrayWithObjects:@"Bit-Perfect: Lautstärke dem System überlassen", @"RfxDevNoVolume", [NSNumber numberWithInt:3], nil],
         [NSArray arrayWithObjects:@"Alle versteckten Buttons aktivieren", @"RfxDevAllButtons", [NSNumber numberWithInt:4], nil],
         [NSArray arrayWithObjects:@"Beta-Look (erste Djukebox)", @"RfxDevBetaLook", [NSNumber numberWithInt:5], nil],
-        [NSArray arrayWithObjects:@"Hintergrund: Musikvideo-Ausschnitt (eigene Clips offline)", @"RfxDevBackdrop", [NSNumber numberWithInt:6], nil], nil];
+        [NSArray arrayWithObjects:@"Hintergrund: Musikvideo-Ausschnitt (eigene Clips offline)", @"RfxDevBackdrop", [NSNumber numberWithInt:6], nil],
+        [NSArray arrayWithObjects:@"Klassischer Cover-Look (Original: weiter auseinander)", @"RfxDevClassicLook", [NSNumber numberWithInt:7], nil],
+        [NSArray arrayWithObjects:@"Alle Menü-Knöpfe ausblenden", @"RfxDevHideButtons", [NSNumber numberWithInt:8], nil], nil];
     for (NSArray *r in rows) {
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(cx - rowW * 0.5f, y, rowW - 80.0f, 31.0f)];
         [l setText:[r objectAtIndex:0]]; [l setTextColor:[UIColor whiteColor]]; [l setBackgroundColor:[UIColor clearColor]];
@@ -2482,6 +2486,16 @@ static NSArray *RfxSortByOrder(NSArray *names) {
         [d setBool:[sw isOn] forKey:@"RfxDevBackdrop"]; [d synchronize];
         if (![sw isOn]) [[RfxBackdrop shared] clear];
         else if ([self IsPlayingClips] && [[self m_clips] count] > 0) [self UpdateBackdropForClip:[[self m_clips] objectAtIndex:0]];
+        break;
+    case 7757:
+        [d setBool:[sw isOn] forKey:@"RfxDevClassicLook"]; [d synchronize];
+        gRfxClassicLook = [sw isOn];
+        [m_glv drawView];
+        break;
+    case 7758:
+        [d setBool:[sw isOn] forKey:@"RfxDevHideButtons"]; [d synchronize];
+        gRfxHideButtons = [sw isOn];
+        [m_glv ApplyButtonVisibility];
         break;
     case 7754:
         [d setBool:[sw isOn] forKey:@"RfxDevAllButtons"]; [d synchronize];
@@ -4476,7 +4490,7 @@ static void KV_PlayStatus(NSString *text) {
     if (cf != nil) { RfxBDLog([NSString stringWithFormat:@"Cache: %@", [cf lastPathComponent]]); [bd showFile:cf in:self behind:m_glv start:cs]; return; }
     [[RfxPluginManager shared] StreamVideoForTitle:title artist:artist videoId:known done:^(NSDictionary *r) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (r == nil) { RfxBDLog(@"kein Video gefunden/aufgelöst"); return; }
+            if (r == nil) { RfxBDLog(@"kein Video gefunden/aufgelöst, blende zu Schwarz"); if ([bd gen] == gen) [bd clear]; return; }
             NSString *vid = [r objectForKey:@"videoId"];
             RfxBDLog([NSString stringWithFormat:@"Video %@ aufgelöst, lade Ausschnitt", vid]);
             if ([vid length] > 0 && ![vid isEqualToString:known]) {

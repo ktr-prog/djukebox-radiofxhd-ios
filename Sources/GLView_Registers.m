@@ -185,7 +185,7 @@
     [m_registers[6] setFrame:[self GetRegisterFrame:pad withindex:6]];
     [m_registers[6] setM_enabled:YES];
     [m_registers[6] setUserInteractionEnabled:YES];
-    [m_registers[6] setAlpha:1.0f];
+    [m_registers[6] setAlpha:gRfxButtonAlpha];
 }
 
 - (void)MoveRegisters:(BOOL)moveRegisters {
@@ -202,6 +202,14 @@
     [m_searchview release];
     for (int i = 0; i < 10; i++) [m_registers[i] release];
     m_movingregisters = NO;
+}
+
+// the round menu buttons: more transparent while a video plays behind the coverflow / hidden by the dev menu switch
+- (void)DimRegisters {
+    for (int i = 0; i < 10; i++) if (m_registers[i] != nil && [m_registers[i] m_enabled]) [m_registers[i] setAlpha:gRfxButtonAlpha];
+}
+- (void)ApplyButtonVisibility {
+    for (int i = 0; i < 10; i++) if (m_registers[i] != nil) [m_registers[i] setHidden:gRfxHideButtons];
 }
 
 - (void)HideRegisters:(BOOL)hide {
@@ -308,8 +316,9 @@
         [m_registers[i] setFrame:[self GetRegisterFrame:pad withindex:i]];
         BOOL on = [m_registers[i] m_enabled];
         [m_registers[i] setUserInteractionEnabled:on];
-        [m_registers[i] setAlpha:on ? 1.0f : 0.0f];
+        [m_registers[i] setAlpha:on ? gRfxButtonAlpha : 0.0f];
     }
+    [self ApplyButtonVisibility];
     [self MoveOneRegister:pad];
     if (arg != 1) {
         [m_searchview FitSubViews:pad];

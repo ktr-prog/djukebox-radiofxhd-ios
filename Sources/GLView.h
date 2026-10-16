@@ -6,6 +6,9 @@
 #import <OpenGLES/ES1/glext.h>
 #import <QuartzCore/QuartzCore.h>
 
+extern BOOL gRfxClassicLook;       // dev menu: the classic cover look (wide spacing, side covers not dimmed)
+extern BOOL gRfxHideButtons;       // dev menu: hide the round menu buttons
+extern float gRfxButtonAlpha;      // menu buttons are more transparent while a backdrop video plays
 extern int gRfxBeatFX;            // dev menu: effect of the playing cover
 NSString *RfxBeatFXName(int i);
 int RfxBeatFXCount(void);
@@ -306,6 +309,9 @@ extern BOOL gRfxBetaLook;          // dev menu: layout of the first Tobit Djukeb
 - (void)MarkClipPlayed:(ClipObject *)clip;
 - (void)FinishGL;
 - (void)ResumeAfterBackground;
+- (void)DimRegisters;
+- (void)ApplyButtonVisibility;
+- (float)BackdropBottomFraction;      // screen height (0..1, from the top) where the bottom edge of the middle cover is
 - (void)SelectClipImmediately:(ClipObject *)clip;
 - (void)startCircleAnimation:(double)circleAnimation;
 - (void)driveCircleAnimation;

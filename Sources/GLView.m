@@ -34,6 +34,9 @@ static const GLfloat kTexCoordMain[8]    = { 0, 1,  1, 1,  0, 0,  1, 0 };
 static const GLfloat kTexCoordReflect[8] = { 0, 0.5f, 1, 0.5f, 0, 0, 1, 0 };
 
 // Water level of the cover that belongs to a plugin title that is loading (see SetWaterForClipID:level:)
+BOOL gRfxClassicLook = NO;
+BOOL gRfxHideButtons = NO;
+float gRfxButtonAlpha = 1.0f;
 BOOL gRfxBackdropOn = NO;   // a video runs behind the coverflow: clear to transparent
 UIView *gRfxBackdropGL = nil;
 BOOL gRfxBetaLook = NO;       // dev menu: layout of the first Tobit Djukebox
@@ -207,6 +210,8 @@ static BOOL gRfxWaterOn = NO;
     m_flipping = NO;
     gRfxBetaLook = [[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevBetaLook"];
     { id fxp = [[NSUserDefaults standardUserDefaults] objectForKey:@"RfxDevBeatFX"]; if (fxp) gRfxBeatFX = [fxp intValue]; }
+    gRfxClassicLook = [[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevClassicLook"];
+    gRfxHideButtons = [[NSUserDefaults standardUserDefaults] boolForKey:@"RfxDevHideButtons"];
     m_anglediff = 14.583333333333334;           // 0x402CAAAAAAAAAAAB
     cache = [[DataCache alloc] initWithCapacity:0x6e];
     [cache SetGLPointer:self];
@@ -299,6 +304,23 @@ static BOOL gRfxWaterOn = NO;
     [m_selectedspotifyfolderid release];
     [m_trytorestorespotifyid release];
     [super dealloc];
+}
+
+// Where the middle cover ends on the screen (fraction of the view height from the top): the backdrop video is shown above that line,
+// the cover's shadow / reflection lies below it.  Same projection as drawIntern (frustum 55 degrees, translate -8.5, scale 0.48).
+- (float)BackdropBottomFraction {
+    CGRect b = [self bounds];
+    if (b.size.height < 1.0f) return 0.6f;
+    double aspect = b.size.width / b.size.height;
+    double Z = 14.4;
+    double yShift = (Z * sin((double)m_inclineangle / 180.0 * -M_PI)) * -0.125;
+    double yBot = yShift + (double)m_yup - 1.09;
+    double ey = 0.48 * yBot, ez = 8.5 - 0.48 * Z;
+    double ndc = (ey / ez) / (tan(0.9599311) / aspect);
+    double f = (1.0 - ndc) * 0.5;
+    if (f < 0.25) f = 0.25;
+    if (f > 0.95) f = 0.95;
+    return (float)f;
 }
 
 - (void)SetDrawVars:(CGSize)drawVars {
@@ -946,6 +968,13 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
             Z += q * 14.4;
         }
         double xc = R2 * cs;                                          // horizontal position
+        // new look (the classic one is a dev menu switch): the covers sit closer together, the ones beside the middle are darker
+        float sideDim = 1.0f;
+        if (!gRfxClassicLook && !pinching && [self m_selectedfolderid] != -33) {
+            xc *= 0.80;
+            double relk = fabs((double)k - 6.0 - frac);
+            sideDim = (float)(1.0 - 0.34 * fmin(relk, 1.0));
+        }
         double betaA = -1.0, betaS = 1.0, betaLift = 0.0;
         if (gRfxBetaLook && ![self m_pinching] && [self m_selectedfolderid] != -33) {
             // dev menu "Beta-Look": the first Tobit Djukebox (see the pictures): the cover in the middle is the biggest, the two
@@ -1025,6 +1054,7 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
             float shade = (float)shd;
             if (shd < 0.1) shade = 0.1f;
             if (betaA >= 0.0) shade = (betaA <= 1.0) ? 1.0f : (float)fmax(0.45, 1.0 - 0.25 * (betaA - 1.0));
+            else shade *= sideDim;
 
             float hh;
             int pct = [tile percent];
@@ -1258,6 +1288,7 @@ static BOOL RfxTileIsPlaying(ClipObject *tile, ClipObject *pl) {
                 if (shd > 1.0) shd = 1.0;
                 float shade2 = (float)shd;
                 if (shd < 0.1) shade2 = 0.1f;
+                if (betaA < 0.0) shade2 *= sideDim;
                 if ([[[self m_tilearray] objectAtIndex:tileIdx] ID] == m_id_to_delete)
                     ra = (float)((double)ra * (((double)m_deleteexplodefactor + -1.0) * -0.5 + 1.0));
                 float a = ra * shade2;
