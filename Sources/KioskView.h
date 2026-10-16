@@ -308,6 +308,7 @@
 - (void)ShowDevMenu;
 - (void)CloseDevMenu;
 - (void)DevSwitchChanged:(UISwitch *)sw;
+- (void)UpdateBackdropForClip:(ClipObject *)c;
 - (void)DevSliderDone:(UISlider *)sl;
 - (void)ShowTutorial;
 - (void)ShowTutorialPage;
@@ -332,6 +333,8 @@
 - (void)ImportClip:(ClipObject *)co;
 - (NSArray *)AllNames;
 - (void)MovePlugin:(NSString *)name by:(int)delta;
+- (void)StreamVideoForTitle:(NSString *)title artist:(NSString *)artist videoId:(NSString *)vid done:(void (^)(NSDictionary *))done;
+- (void)ResolveRedirect:(NSDictionary *)red fallback:(NSDictionary *)fb exclude:(NSString *)ex done:(void (^)(id, NSString *))done;
 - (NSArray *)SearchPlatforms;   // {id, name, note} of every loaded plugin that can search (sorted by name)
 - (BOOL)IsAutostart:(NSString *)name;
 - (void)SetAutostart:(BOOL)on forName:(NSString *)name;
